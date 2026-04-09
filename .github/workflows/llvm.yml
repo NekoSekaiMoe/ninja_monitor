@@ -40,4 +40,5 @@ jobs:
 
     - name: Build with ninja_monitor
       run: |
-        ./build/ninja_monitor --ninja ./build/ninja_stage2/ninja_mod -- -C llvm-build -j$(nproc) llvm-tblgen
+        cd llvm-build
+        ../build/ninja_monitor --ninja ../build/ninja_stage2/ninja_mod
