@@ -1,26 +1,38 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: bootstrap
+name: Bootstrap
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
+      with:
+        submodules: recursive
 
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
 
-    - name: Setup dep
+    - name: Install dependencies
       run: sudo apt install ninja-build cmake gcc g++ python3 -y
 
-    - name: Build
+    - name: Bootstrap build
       run: python3 bootstrap.py --bootstrap
+
+    - name: Clone source
+      run: git clone --depth 1 https://github.com/kitware/cmake.git llvm-source
+
+    - name: Configure
+      run: |
+        cmake -S llvm-source -B llvm-build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build with ninja_monitor
+      run: |
+        cd llvm-build
+        ../build/ninja_monitor --ninja ../build/ninja_stage2/ninja_mod
