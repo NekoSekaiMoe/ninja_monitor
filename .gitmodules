@@ -1,0 +1,3 @@
+[submodule "dep/ninja_mod"]
+	path = dep/ninja_mod
+	url = https://android.googlesource.com/platform/external/ninja

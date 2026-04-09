@@ -1,0 +1,4 @@
+ninja_monitor
+build/
+.ninja_deps
+.ninja_log
