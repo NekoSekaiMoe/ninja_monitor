@@ -1,16 +1,18 @@
 From a644b1e2d9387cc456354151ff8eaf778906b902 Mon Sep 17 00:00:00 2001
 From: dabao1955 <79307765+dabao1955@users.noreply.github.com>
 Date: Thu, 9 Apr 2026 11:49:28 +0800
-Subject: [PATCH] Add CMake build support from v1.10.0 and fix lexer.in.cc
- interface
+Subject: [PATCH] Add CMake build support and Ninja 1.10+ features
 
 - Add CMakeLists.txt from v1.10.0 with main branch source files
 - Fix EvaluateBindingOnRule to include Scope* target parameter
+- Support multiple outputs with depslog (Ninja 1.10+ feature)
 - Build now works with both configure.py and CMake
 ---
- CMakeLists.txt  | 147 ++++++++++++++++++++++++++++++++++++++++++++++++
- src/lexer.in.cc |   6 +-
- 2 files changed, 150 insertions(+), 3 deletions(-)
+ CMakeLists.txt              | 147 ++++++++++++++++++++++++++++++++++++++++++++++++
+ src/lexer.in.cc             |   6 +-
+ src/manifest_parser.cc      |  11 ----
+ src/manifest_parser_test.cc |   6 +-
+ 4 files changed, 155 insertions(+), 14 deletions(-)
  create mode 100644 CMakeLists.txt
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
@@ -144,6 +146,51 @@ index 9074570..4f78a92 100644
    });
    return result;
  }
+
+diff --git a/src/manifest_parser.cc b/src/manifest_parser.cc
+index 4823779..bc66d0b 100644
+--- a/src/manifest_parser.cc
++++ b/src/manifest_parser.cc
+@@ -537,17 +537,6 @@ bool ManifestLoader::AddEdgeToGraph(Edge* edge, const LoadedFile& file,
+     }
+   }
+ 
+-  // Multiple outputs aren't (yet?) supported with depslog.
+-  std::string deps_type;
+-  if (!edge->EvaluateVariable(&deps_type, kDeps, edge->pos_.scope(), err, EdgeEval::kParseTime))
+-    return false;
+-  if (!deps_type.empty() && edge->outputs_.size() - edge->implicit_outs_ > 1) {
+-    return DecorateError(file, edge->parse_state_.final_diag_pos,
+-                         "multiple outputs aren't (yet?) supported by depslog; "
+-                         "bring this up on the mailing list if it affects you",
+-                         err);
+-  }
+-
+   // Lookup, validate, and save any dyndep binding.  It will be used later
+   // to load generated dependency information dynamically, but it must
+   // be one of our manifest-specified inputs.
+diff --git a/src/manifest_parser_test.cc b/src/manifest_parser_test.cc
+index c9bf73f..d1fb346 100644
+--- a/src/manifest_parser_test.cc
++++ b/src/manifest_parser_test.cc
+@@ -931,14 +931,14 @@ TEST_F(ParserTest, MultipleImplicitOutputsWithDeps) {
+ }
+ 
+ TEST_F(ParserTest, MultipleOutputsWithDeps) {
++  // Multiple outputs with depslog is now supported (Ninja 1.10+ feature).
+   State local_state;
+   ManifestParser parser(&local_state, NULL);
+   string err;
+-  EXPECT_FALSE(parser.ParseTest("rule cc\n  command = foo\n  deps = gcc\n"
++  EXPECT_TRUE(parser.ParseTest("rule cc\n  command = foo\n  deps = gcc\n"
+                                "build a.o b.o: cc c.cc\n",
+                                &err));
+-  EXPECT_EQ("input:5: multiple outputs aren't (yet?) supported by depslog; "
+-            "bring this up on the mailing list if it affects you\n", err);
++  EXPECT_EQ("", err);
+ }
+ 
+ TEST_F(ParserTest, SubNinja) {
 -- 
 2.53.0
 
