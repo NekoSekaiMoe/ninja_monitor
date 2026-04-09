@@ -9,11 +9,11 @@ This script implements a bootstrap process similar to Soong's bootstrap flow:
   4. ninja_stage1          - Build ninja with CMake (first stage)
   5. ninja_stage2          - Rebuild ninja with ninja_stage1 (self-hosting)
   6. ninja_monitor         - Rebuild ninja_monitor with ninja_stage2
-  7. generate build.ninja  - Create build.ninja file
+  7. generate boot.ninja   - Create boot.ninja file
   8. ninja_stage3          - Execute ninja with ninja_monitor (only with --bootstrap)
 
 Usage:
-  python3 bootstrap.py              # Generate build.ninja only
+  python3 bootstrap.py              # Generate boot.ninja only
   python3 bootstrap.py --bootstrap  # Full bootstrap including running ninja
 """
 
@@ -46,7 +46,7 @@ NINJA_MONITOR_GOBUILD = OUT_DIR / "ninja_monitor_gobuild"  # Go build version
 NINJA_MONITOR_BIN = OUT_DIR / "ninja_monitor"              # Ninja build version
 NINJA_STAGE1_BIN = NINJA_STAGE1_DIR / "ninja_mod"          # CMake built ninja
 NINJA_STAGE2_BIN = NINJA_STAGE2_DIR / "ninja_mod"          # Ninja rebuilt ninja
-BUILD_NINJA = NINJA_STAGE3_DIR / "build.ninja"
+BUILD_NINJA = NINJA_STAGE3_DIR / "boot.ninja"
 
 EPOCH_FILE = OUT_DIR / f".bootstrap.epoch.{BOOTSTRAP_EPOCH}"
 
@@ -386,7 +386,7 @@ def step7_generate_build_ninja(logger: Logger) -> bool:
     
     Output: out/ninja_stage3/build.ninja
     """
-    logger.step(7, 8, "Generating build.ninja")
+    logger.step(7, 8, "Generating boot.ninja")
     
     NINJA_STAGE3_DIR.mkdir(parents=True, exist_ok=True)
     
