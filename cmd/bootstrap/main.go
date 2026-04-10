@@ -28,10 +28,10 @@ import (
 )
 
 var (
-	verbose       = flag.Bool("v", false, "Verbose output")
+	verbose       = flag.Bool("verbose", false, "Verbose output")
 	bootstrap     = flag.Bool("bootstrap", false, "Run full bootstrap")
 	clean         = flag.Bool("clean", false, "Clean build artifacts")
-	jobs          = flag.Int("j", runtime.NumCPU(), "Parallel jobs")
+	jobs          = flag.Int("jobs", runtime.NumCPU(), "Parallel jobs")
 	skipGo        = flag.Bool("skip-go", false, "Skip go build")
 	skipSubmodule = flag.Bool("skip-submodule", false, "Skip submodule update")
 	skipPatch     = flag.Bool("skip-patch", false, "Skip patch")
@@ -452,7 +452,7 @@ func runStage3() error {
 	}
 	defer os.Remove(fifo)
 
-	cmd := exec.Command(monitorBin, "--ninja", stage2Ninja, "--", "-f", filepath.Join(rootDir, "build", "ninja_build_stage3.ninja"), "-j", fmt.Sprintf("%d", *jobs))
+	cmd := exec.Command(monitorBin, "--verbose", "--ninja", stage2Ninja, "--", "-f", filepath.Join(rootDir, "build", "ninja_build_stage3.ninja"), "-j", fmt.Sprintf("%d", *jobs))
 	cmd.Dir = rootDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

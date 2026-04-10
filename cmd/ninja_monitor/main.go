@@ -31,7 +31,7 @@ import (
 var (
 	fifoPath    = flag.String("fifo", "", "Path to FIFO for monitor-only mode (if empty, auto-generates)")
 	formatStr   = flag.String("format", "", "Progress format string (NINJA_STATUS style)")
-	verbose     = flag.Bool("v", false, "Verbose output")
+	verbose     = flag.Bool("verbose", false, "Verbose output")
 	quiet       = flag.Bool("quiet", false, "Quiet mode (no smart status table)")
 	tableHeight = flag.Int("table-height", 0, "Height of action table (0=auto, negative=disable)")
 	ninjaPath   = flag.String("ninja", "", "Path to ninja executable (default: same dir as ninja_monitor)")
