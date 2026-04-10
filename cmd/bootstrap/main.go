@@ -29,7 +29,7 @@ import (
 
 var (
 	verbose       = flag.Bool("v", false, "Verbose output")
-	bootstrap     = flag.Bool("bootstrap", false, "Run full bootstrap (default: generate only)")
+	bootstrap     = flag.Bool("bootstrap", false, "Run full bootstrap")
 	clean         = flag.Bool("clean", false, "Clean build artifacts")
 	jobs          = flag.Int("j", runtime.NumCPU(), "Parallel jobs")
 	skipGo        = flag.Bool("skip-go", false, "Skip go build")
@@ -60,11 +60,10 @@ func main() {
 	checkBootstrapEpoch()
 
 	if !*bootstrap {
-		err := generateBootNinja(rootDir)
-		if err != nil {
-			fatal("generate boot.ninja: %v", err)
+		if err := generateNinjaFiles(rootDir); err != nil {
+			fatal("generate ninja: %v", err)
 		}
-		fmt.Println("build.ninja generated (use --bootstrap to run full build)")
+		fmt.Println("build.ninja generated (use --bootstrap to build)")
 		return
 	}
 
@@ -188,7 +187,6 @@ func writeEpochFile() {
 }
 
 func runSubmoduleUpdate() error {
-	fmt.Println("[1/7] Updating ninja submodule...")
 	ninjaModDir := filepath.Join(rootDir, "dep", "ninja_mod")
 
 	if fileExists(filepath.Join(ninjaModDir, ".git")) {
@@ -206,7 +204,6 @@ func runSubmoduleUpdate() error {
 }
 
 func runPatch() error {
-	fmt.Println("[2/7] Patching ninja source...")
 	patchFile := filepath.Join(rootDir, "dep", "i.patch")
 	if !fileExists(patchFile) {
 		fmt.Println("  patch not found, skipping")
@@ -228,7 +225,6 @@ func runPatch() error {
 }
 
 func goBuildMonitor() error {
-	fmt.Println("[3/7] Building ninja_monitor (go build)...")
 	outBin := filepath.Join(rootDir, "build", "ninja_monitor_gobuild")
 	os.MkdirAll(filepath.Join(rootDir, "build"), 0755)
 
@@ -313,7 +309,6 @@ func addCommonBuilds(nf *ninja_writer.NinjaFile, buildDir, srcVar string) {
 }
 
 func generateStage1Ninja() error {
-	fmt.Println("[4/7] Generating build.ninja (stage 1)...")
 	buildDir := getOutputDir("ninja_stage1")
 	srcDir := filepath.Join(rootDir, "dep", "ninja_mod", "src")
 
@@ -330,7 +325,6 @@ func generateStage1Ninja() error {
 }
 
 func runStage1() error {
-	fmt.Println("[5/7] Running ninja stage 1...")
 	cmd := exec.Command("ninja", "-f", filepath.Join(rootDir, "build", "ninja_build.ninja"), "-j", fmt.Sprintf("%d", *jobs))
 	cmd.Dir = rootDir
 	cmd.Stdout = os.Stdout
@@ -339,7 +333,6 @@ func runStage1() error {
 }
 
 func generateStage2Ninja() error {
-	fmt.Println("Generating build_stage2.ninja...")
 	buildDir := getOutputDir("ninja_stage2")
 	srcDir := filepath.Join(rootDir, "dep", "ninja_mod", "src")
 	stage1Bin := filepath.Join(rootDir, "build", "ninja_stage1", "ninja_mod")
@@ -371,7 +364,6 @@ func generateStage2Ninja() error {
 }
 
 func runStage2() error {
-	fmt.Println("[6/7] Running ninja stage 2 (monitored)...")
 	stage1Ninja := filepath.Join(rootDir, "build", "ninja_stage1", "ninja_mod")
 	monitorBin := filepath.Join(rootDir, "build", "ninja_monitor_gobuild")
 
@@ -396,7 +388,6 @@ func runStage2() error {
 }
 
 func generateStage3Ninja() error {
-	fmt.Println("Generating build_stage3.ninja...")
 	buildDir := getOutputDir("ninja_stage3")
 	srcDir := filepath.Join(rootDir, "dep", "ninja_mod", "src")
 	stage2Bin := filepath.Join(rootDir, "build", "ninja_stage2", "ninja_mod")
@@ -447,7 +438,6 @@ func generateStage3Ninja() error {
 }
 
 func runStage3() error {
-	fmt.Println("[7/7] Running ninja stage 3 (monitored)...")
 	stage2Ninja := filepath.Join(rootDir, "build", "ninja_stage2", "ninja_mod")
 	monitorBin := filepath.Join(rootDir, "build", "ninja_monitor")
 
@@ -462,7 +452,7 @@ func runStage3() error {
 	}
 	defer os.Remove(fifo)
 
-	cmd := exec.Command(monitorBin,"-v", "--ninja", stage2Ninja, "--", "-f", filepath.Join(rootDir, "build", "ninja_build_stage3.ninja"), "-j", fmt.Sprintf("%d", *jobs))
+	cmd := exec.Command(monitorBin, "--ninja", stage2Ninja, "--", "-f", filepath.Join(rootDir, "build", "ninja_build_stage3.ninja"), "-j", fmt.Sprintf("%d", *jobs))
 	cmd.Dir = rootDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -470,7 +460,7 @@ func runStage3() error {
 	return cmd.Run()
 }
 
-func generateBootNinja(root string) error {
+func generateNinjaFiles(root string) error {
 	if err := generateStage1Ninja(); err != nil {
 		return err
 	}
