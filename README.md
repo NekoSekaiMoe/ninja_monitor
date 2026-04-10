@@ -50,7 +50,16 @@ These components were originally developed by Google for Android builds and are 
 
 ### Quick Build (Go only)
 
+> [!NOTE]
+> This builds `ninja_monitor` only — it does NOT build the modified Ninja binary. The monitor expects to find `ninja_mod` in its own directory by default.
+
 ```bash
+# 1. Generate protobuf Go code (if frontend.pb.go doesn't exist yet)
+cd internal/ninja_frontend
+protoc --go_out=. --go_opt=paths=source_relative frontend.proto
+cd ../..
+
+# 2. Build ninja_monitor
 go build -o build/ninja_monitor ./cmd/ninja_monitor
 ```
 
