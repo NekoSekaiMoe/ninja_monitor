@@ -462,7 +462,7 @@ func runStage3() error {
 	}
 	defer os.Remove(fifo)
 
-	cmd := exec.Command(monitorBin, "--ninja", stage2Ninja, "--", "-f", filepath.Join(rootDir, "build", "ninja_build_stage3.ninja"), "-j", fmt.Sprintf("%d", *jobs))
+	cmd := exec.Command(monitorBin,"-v", "--ninja", stage2Ninja, "--", "-f", filepath.Join(rootDir, "build", "ninja_build_stage3.ninja"), "-j", fmt.Sprintf("%d", *jobs))
 	cmd.Dir = rootDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
