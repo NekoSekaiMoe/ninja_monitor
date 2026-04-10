@@ -35,7 +35,7 @@ jobs:
     - name: Build with ninja_monitor
       run: |
         cd llvm-build
-        ../build/ninja_monitor --ninja ../build/ninja_stage2/ninja_mod
+        ../build/out/bin/ninja_monitor --ninja ../build/out/bin/ninja_mod
 
     - name: Test retmain time
       run: |
@@ -43,4 +43,4 @@ jobs:
         cp .ninja_log log
         ninja clean
         cp log .ninja_log
-        ../build/ninja_monitor --ninja ../build/ninja_stage2/ninja_mod
+        ../build/out/bin/ninja_monitor --ninja ../build/out/bin/ninja_mod
