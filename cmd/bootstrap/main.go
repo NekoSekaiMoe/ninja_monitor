@@ -84,6 +84,14 @@ func cleanBuild() {
 		fatal("clean: %v", err)
 	}
 	fmt.Println("cleaned build/")
+
+	submoduleDir := filepath.Join(rootDir, "dep", "ninja_mod")
+	if _, err := os.Stat(submoduleDir); err == nil {
+		if err := os.RemoveAll(submoduleDir); err != nil {
+			fatal("clean submodule: %v", err)
+		}
+		fmt.Println("cleaned dep/ninja_mod/")
+	}
 }
 
 var epochLock sync.Mutex
