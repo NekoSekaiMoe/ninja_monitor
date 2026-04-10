@@ -2,3 +2,4 @@ build/
 .ninja_deps
 .ninja_log
 AGENTS.md
+internal/ninja_frontend/frontend.pb.go

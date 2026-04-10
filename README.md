@@ -42,9 +42,9 @@ These components were originally developed by Google for Android builds and are 
 ## Requirements
 
 - Go 1.23+
-- CMake 3.15+ (for building Ninja)
 - Python 3 (for bootstrap script)
 - Git (for submodule management)
+- protoc 3.15+ with protoc-gen-go (for .proto code generation)
 
 ## Building
 

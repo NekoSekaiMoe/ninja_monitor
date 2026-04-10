@@ -145,6 +145,9 @@ func runFullBootstrap() error {
 	}
 
 	if !*skipGo {
+		if err := generateProto(); err != nil {
+			return fmt.Errorf("proto generation: %v", err)
+		}
 		if err := goBuildMonitor(); err != nil {
 			return fmt.Errorf("go build: %v", err)
 		}
@@ -226,6 +229,43 @@ func runPatch() error {
 
 	cmd := exec.Command("git", "apply", patchFile)
 	cmd.Dir = ninjaModDir
+	return cmd.Run()
+}
+
+func checkTool(name string) error {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return fmt.Errorf("required tool not found: %s", name)
+	}
+	if *verbose {
+		fmt.Printf("  found %s: %s\n", name, path)
+	}
+	return nil
+}
+
+func generateProto() error {
+	if err := checkTool("protoc"); err != nil {
+		return err
+	}
+
+	if err := checkTool("protoc-gen-go"); err != nil {
+		return err
+	}
+
+	if err := exec.Command("go", "mod", "download").Run(); err != nil {
+		return fmt.Errorf("go mod download: %v", err)
+	}
+
+	protoDir := filepath.Join(rootDir, "internal", "ninja_frontend")
+
+	cmd := exec.Command("protoc",
+		"--go_out=.",
+		"--go_opt=paths=source_relative",
+		"frontend.proto",
+	)
+	cmd.Dir = protoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
