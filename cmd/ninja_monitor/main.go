@@ -129,7 +129,7 @@ func main() {
 
 	var output status.StatusOutput
 	if !*quiet && colorize {
-		output = terminal.NewSmartStatusOutputWithHeight(os.Stdout, formatter, *tableHeight)
+		output = terminal.NewSmartStatusOutputWithHeight(os.Stdout, formatter, *tableHeight, *verbose)
 	} else {
 		output = terminal.NewSimpleStatusOutput(os.Stdout, formatter, false)
 	}

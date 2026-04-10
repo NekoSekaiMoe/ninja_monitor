@@ -54,6 +54,8 @@ type smartStatusOutput struct {
 	sigwinch        chan os.Signal
 	sigwinchHandled chan bool
 
+	verbose bool
+
 	// Once there is a failure, we stop printing command output so the error
 	// is easier to find
 	haveFailures bool
@@ -66,13 +68,13 @@ type smartStatusOutput struct {
 // current build status similarly to Ninja's built-in terminal
 // output.
 func NewSmartStatusOutput(w io.Writer, formatter formatter) status.StatusOutput {
-	return NewSmartStatusOutputWithHeight(w, formatter, 0)
+	return NewSmartStatusOutputWithHeight(w, formatter, 0, false)
 }
 
 // NewSmartStatusOutputWithHeight returns a StatusOutput with a specified table height.
 // If tableHeight is 0, auto-calculates based on terminal height.
 // If tableHeight is negative, disables the action table.
-func NewSmartStatusOutputWithHeight(w io.Writer, formatter formatter, tableHeight int) status.StatusOutput {
+func NewSmartStatusOutputWithHeight(w io.Writer, formatter formatter, tableHeight int, verbose bool) status.StatusOutput {
 	s := &smartStatusOutput{
 		writer:    w,
 		formatter: formatter,
@@ -80,6 +82,7 @@ func NewSmartStatusOutputWithHeight(w io.Writer, formatter formatter, tableHeigh
 		haveBlankLine: true,
 
 		tableMode: true,
+		verbose:   verbose,
 
 		done:     make(chan bool),
 		sigwinch: make(chan os.Signal),
@@ -402,7 +405,11 @@ func (s *smartStatusOutput) actionTable() {
 			seconds := int(time.Since(runningAction.startTime).Round(time.Second).Seconds())
 
 			desc := runningAction.action.Description
-			if desc == "" {
+			if s.verbose {
+				if runningAction.action.Command != "" {
+					desc = runningAction.action.Command
+				}
+			} else if desc == "" {
 				desc = runningAction.action.Command
 			}
 
