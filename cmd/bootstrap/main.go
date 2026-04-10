@@ -49,7 +49,12 @@ var rootDir string
 func main() {
 	flag.Parse()
 
-	rootDir = getwd()
+	exe, err := os.Executable()
+	if err != nil {
+		fatal("os.Executable: %v", err)
+	}
+	// binary lives at $ROOT/build/bootstrap, so root is parent of "build"
+	rootDir = filepath.Dir(filepath.Dir(exe))
 	os.Chdir(rootDir)
 
 	if *clean {
@@ -71,14 +76,6 @@ func main() {
 		fatal("%v", err)
 	}
 	fmt.Println("\nBootstrap completed successfully.")
-}
-
-func getwd() string {
-	d, err := os.Getwd()
-	if err != nil {
-		fatal("getwd: %v", err)
-	}
-	return d
 }
 
 func cleanBuild() {
