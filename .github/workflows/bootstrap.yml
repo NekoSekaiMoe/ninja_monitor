@@ -37,10 +37,10 @@ jobs:
         cd llvm-build
         ../build/out/bin/ninja_monitor --ninja ../build/out/bin/ninja_mod
 
-    - name: Test retmain time
+    - name: Test verbose
       run: |
         cd llvm-build
         cp .ninja_log log
         ninja clean
         cp log .ninja_log
-        ../build/out/bin/ninja_monitor --ninja ../build/out/bin/ninja_mod
+        ../build/out/bin/ninja_monitor --ninja ../build/out/bin/ninja_mod --verbose

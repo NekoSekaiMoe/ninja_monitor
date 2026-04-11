@@ -26,6 +26,7 @@ type formatter struct {
 	colorize bool
 	format   string
 	quiet    bool
+	verbose  bool
 	start    time.Time
 }
 
@@ -34,15 +35,16 @@ type formatter struct {
 // format takes nearly all the same options as NINJA_STATUS.
 // %c is currently unsupported.
 // NewFormatter creates a new formatter with the given settings.
-func NewFormatter(colorize bool, format string, quiet bool) formatter {
-	return newFormatter(colorize, format, quiet)
+func NewFormatter(colorize bool, format string, quiet bool, verbose bool) formatter {
+	return newFormatter(colorize, format, quiet, verbose)
 }
 
-func newFormatter(colorize bool, format string, quiet bool) formatter {
+func newFormatter(colorize bool, format string, quiet bool, verbose bool) formatter {
 	return formatter{
 		colorize: colorize,
 		format:   format,
 		quiet:    quiet,
+		verbose:  verbose,
 		start:    time.Now(),
 	}
 }
@@ -74,6 +76,12 @@ func (s formatter) progress(counts status.Counts) string {
 			output += fmt.Sprintf(" %s remaining", remaining)
 		}
 		output += "] "
+
+		// Verbose mode: show running jobs count outside brackets
+		if s.verbose && counts.RunningActions > 0 {
+			output += fmt.Sprintf("(%d jobs) ", counts.RunningActions)
+		}
+
 		return output
 	}
 

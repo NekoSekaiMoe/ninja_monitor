@@ -125,13 +125,13 @@ func main() {
 
 	// Create status output
 	colorize := terminal.IsSmartTerminal(os.Stdout)
-	formatter := terminal.NewFormatter(colorize, *formatStr, *quiet)
+	formatter := terminal.NewFormatter(colorize, *formatStr, *quiet, *verbose)
 
 	var output status.StatusOutput
 	if !*quiet && colorize {
 		output = terminal.NewSmartStatusOutputWithHeight(os.Stdout, formatter, *tableHeight, *verbose)
 	} else {
-		output = terminal.NewSimpleStatusOutput(os.Stdout, formatter, false)
+		output = terminal.NewSimpleStatusOutput(os.Stdout, formatter, false, *verbose)
 	}
 	st.AddOutput(output)
 

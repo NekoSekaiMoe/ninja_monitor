@@ -187,6 +187,7 @@ func (n *NinjaReader) run() {
 			if msg.BuildStarted.GetParallelism() > 0 {
 				parallelism = msg.BuildStarted.GetParallelism()
 			}
+			n.status.SetMaxParallelism(int(parallelism))
 			// It is estimated from total time / parallelism assumming the build is packing enough.
 			estimatedDurationFromTotal := time.Duration(msg.BuildStarted.GetEstimatedTotalTime()/parallelism) * time.Millisecond
 			// It is estimated from critical path time which is useful for small size build.

@@ -96,7 +96,7 @@ type ActionResultStats struct {
 
 // Counts describes the number of actions in each state
 type Counts struct {
-	// TotalActions is the total number of expected changes.  This can
+	// TotalActions is the total number of expected changes. This can
 	// generally change up or down during a build, but it should never go
 	// below the number of StartedActions
 	TotalActions int
@@ -114,6 +114,9 @@ type Counts struct {
 	FinishedActions int
 
 	EstimatedTime time.Time
+
+	// MaxParallelism is the maximum number of parallel jobs ninja can run.
+	MaxParallelism int
 }
 
 // ToolStatus is the interface used by tools to report on their Actions, and to
@@ -126,6 +129,7 @@ type ToolStatus interface {
 	// current number of started actions.
 	SetTotalActions(total int)
 	SetEstimatedTime(estimatedTime time.Time)
+	SetMaxParallelism(max int)
 
 	// StartAction specifies that the associated action has been started by
 	// the tool.
@@ -228,8 +232,9 @@ type StatusOutput interface {
 // per build process (though tools like multiproduct_kati may have multiple
 // independent versions).
 type Status struct {
-	counts  Counts
-	outputs []StatusOutput
+	counts         Counts
+	outputs        []StatusOutput
+	maxParallelism int
 
 	// Protects counts and outputs, and allows each output to
 	// expect only a single caller at a time.
@@ -282,12 +287,20 @@ func (s *Status) SetEstimatedTime(estimatedTime time.Time) {
 	s.counts.EstimatedTime = estimatedTime
 }
 
+func (s *Status) SetMaxParallelism(max int) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.maxParallelism = max
+}
+
 func (s *Status) startAction(action *Action) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	s.counts.RunningActions += 1
 	s.counts.StartedActions += 1
+	s.counts.MaxParallelism = s.maxParallelism
 
 	for _, o := range s.outputs {
 		o.StartAction(action, s.counts)
@@ -300,6 +313,7 @@ func (s *Status) finishAction(result ActionResult) {
 
 	s.counts.RunningActions -= 1
 	s.counts.FinishedActions += 1
+	s.counts.MaxParallelism = s.maxParallelism
 
 	for _, o := range s.outputs {
 		o.FinishAction(result, s.counts)
@@ -346,6 +360,10 @@ func (d *toolStatus) SetTotalActions(total int) {
 
 func (d *toolStatus) SetEstimatedTime(estimatedTime time.Time) {
 	d.status.SetEstimatedTime(estimatedTime)
+}
+
+func (d *toolStatus) SetMaxParallelism(max int) {
+	d.status.SetMaxParallelism(max)
 }
 
 func (d *toolStatus) StartAction(action *Action) {

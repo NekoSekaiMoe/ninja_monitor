@@ -25,16 +25,18 @@ type simpleStatusOutput struct {
 	writer    io.Writer
 	formatter formatter
 	keepANSI  bool
+	verbose   bool
 }
 
 // NewSimpleStatusOutput returns a StatusOutput that represents the
 // current build status similarly to Ninja's built-in terminal
 // output.
-func NewSimpleStatusOutput(w io.Writer, formatter formatter, keepANSI bool) status.StatusOutput {
+func NewSimpleStatusOutput(w io.Writer, formatter formatter, keepANSI bool, verbose bool) status.StatusOutput {
 	return &simpleStatusOutput{
 		writer:    w,
 		formatter: formatter,
 		keepANSI:  keepANSI,
+		verbose:   verbose,
 	}
 }
 
