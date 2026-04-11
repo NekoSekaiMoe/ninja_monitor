@@ -55,6 +55,10 @@ func (s formatter) message(level status.MsgLevel, message string) string {
 	} else if level > status.StatusLvl {
 		return fmt.Sprintf("%s%s", level.Prefix(), message)
 	} else if level == status.StatusLvl {
+		// Special handling for ninja messages: show in bright white
+		if s.colorize && len(message) > 6 && message[:6] == "ninja:" {
+			return ansi.brightWhite() + message + ansi.regular()
+		}
 		return message
 	}
 	return ""
@@ -83,22 +87,22 @@ func (s formatter) progress(counts status.Counts) string {
 		if s.colorize {
 			output += ansi.regular()
 		}
-		output += " "
 
-		// Verbose mode: show running jobs count outside brackets
+		// Verbose mode: show running jobs count right after brackets, no space
 		if s.verbose && counts.RunningActions > 0 {
 			if s.colorize {
 				output += ansi.boldGreen()
 			}
 			if counts.RunningActions == 1 {
-				output += fmt.Sprintf("(%d job) ", counts.RunningActions)
+				output += fmt.Sprintf("(%d job)", counts.RunningActions)
 			} else {
-				output += fmt.Sprintf("(%d jobs) ", counts.RunningActions)
+				output += fmt.Sprintf("(%d jobs)", counts.RunningActions)
 			}
 			if s.colorize {
 				output += ansi.regular()
 			}
 		}
+		output += " "
 
 		return output
 	}

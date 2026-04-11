@@ -280,8 +280,8 @@ func (s *smartStatusOutput) statusLine(str string) {
 	// another line and we won't delete the previous line.
 	str = elide(str, s.termWidth)
 
-	// Move to the beginning on the line, turn on bold blue, print the output,
-	// turn off bold, then clear the rest of the line.
+	// Move to the beginning on the line, turn on bright blue, print the output,
+	// turn off bright blue, then clear the rest of the line.
 	start := "\r" + ansi.boldBlue()
 	end := ansi.regular() + ansi.clearToEndOfLine()
 	fmt.Fprint(s.writer, start, str, end)
@@ -289,12 +289,34 @@ func (s *smartStatusOutput) statusLine(str string) {
 }
 
 func elide(str string, width int) string {
-	if width > 0 && len(str) > width {
-		// TODO: Just do a max. Ninja elides the middle, but that's
-		// more complicated and these lines aren't that important.
-		str = str[:width]
+	if width <= 0 {
+		return str
 	}
-
+	// Calculate visible length by stripping ANSI escapes
+	visibleLen := len(string(stripAnsiEscapes([]byte(str))))
+	if visibleLen <= width {
+		return str
+	}
+	// Need to truncate. Find the position in the original string
+	// that corresponds to the desired visible width.
+	visibleCount := 0
+	inEsc := false
+	for i, c := range str {
+		if inEsc {
+			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+				inEsc = false
+			}
+			continue
+		}
+		if c == '\x1b' {
+			inEsc = true
+			continue
+		}
+		visibleCount++
+		if visibleCount >= width {
+			return str[:i+1] + ansi.regular()
+		}
+	}
 	return str
 }
 
@@ -468,11 +490,15 @@ func (ansiImpl) bold() string {
 }
 
 func (ansiImpl) boldBlue() string {
-	return "\x1b[1;34m"
+	return "\x1b[94m"
 }
 
 func (ansiImpl) boldGreen() string {
-	return "\x1b[1;32m"
+	return "\x1b[92m"
+}
+
+func (ansiImpl) brightWhite() string {
+	return "\x1b[1;97m"
 }
 
 func (ansiImpl) regular() string {
