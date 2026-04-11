@@ -19,7 +19,7 @@ jobs:
         go-version: '1.24'
 
     - name: Install dependencies
-      run: sudo apt install ninja-build meson gcc g++ protoc-gen-go python3 -y
+      run: sudo apt install ninja-build meson gcc gperf protoc-gen-go python3 -y
 
     - name: Bootstrap build
       run: python3 bootstrap.py --bootstrap
