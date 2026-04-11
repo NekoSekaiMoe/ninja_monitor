@@ -19,18 +19,18 @@ jobs:
         go-version: '1.24'
 
     - name: Install dependencies
-      run: sudo apt install ninja-build cmake gcc g++ protoc-gen-go python3 -y
+      run: sudo apt install ninja-build meson gcc g++ protoc-gen-go python3 -y
 
     - name: Bootstrap build
       run: python3 bootstrap.py --bootstrap
 
     - name: Clone source
-      run: git clone --depth 1 https://github.com/kitware/cmake.git llvm-source
+      run: git clone --depth 1 https://github.com/systemd/systemd llvm-source
 
     - name: Configure
       run: |
-        cmake -S llvm-source -B llvm-build -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release
+          cd llvm-source
+          meson setup ../llvm-build
 
     - name: Build with ninja_monitor
       run: |
