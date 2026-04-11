@@ -79,7 +79,11 @@ func (s formatter) progress(counts status.Counts) string {
 
 		// Verbose mode: show running jobs count outside brackets
 		if s.verbose && counts.RunningActions > 0 {
-			output += fmt.Sprintf("(%d jobs) ", counts.RunningActions)
+			if counts.RunningActions == 1 {
+				output += fmt.Sprintf("(%d job) ", counts.RunningActions)
+			} else {
+				output += fmt.Sprintf("(%d jobs) ", counts.RunningActions)
+			}
 		}
 
 		return output
