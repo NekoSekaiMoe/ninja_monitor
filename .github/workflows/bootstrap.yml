@@ -19,7 +19,7 @@ jobs:
         go-version: '1.24'
 
     - name: Install dependencies
-      run: sudo apt install ninja-build meson gcc gperf protoc-gen-go python3 -y
+      run: sudo apt install ninja-build meson gcc gperf protoc-gen-go python3 ccache -y
 
     - name: Bootstrap build
       run: python3 bootstrap.py --bootstrap
@@ -40,7 +40,5 @@ jobs:
     - name: Test verbose
       run: |
         cd llvm-build
-        cp .ninja_log log
-        ninja clean
-        cp log .ninja_log
+        ninja >/dev/null
         ../build/out/bin/ninja_monitor --ninja ../build/out/bin/ninja_mod --verbose
