@@ -280,9 +280,9 @@ func (s *smartStatusOutput) statusLine(str string) {
 	// another line and we won't delete the previous line.
 	str = elide(str, s.termWidth)
 
-	// Move to the beginning on the line, turn on bold, print the output,
+	// Move to the beginning on the line, turn on bold blue, print the output,
 	// turn off bold, then clear the rest of the line.
-	start := "\r" + ansi.bold()
+	start := "\r" + ansi.boldBlue()
 	end := ansi.regular() + ansi.clearToEndOfLine()
 	fmt.Fprint(s.writer, start, str, end)
 	s.haveBlankLine = false
@@ -465,6 +465,14 @@ func (ansiImpl) yellow() string {
 
 func (ansiImpl) bold() string {
 	return "\x1b[1m"
+}
+
+func (ansiImpl) boldBlue() string {
+	return "\x1b[1;34m"
+}
+
+func (ansiImpl) boldGreen() string {
+	return "\x1b[1;32m"
 }
 
 func (ansiImpl) regular() string {

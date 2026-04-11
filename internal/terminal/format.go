@@ -70,19 +70,33 @@ func remainingTimeString(t time.Time) string {
 
 func (s formatter) progress(counts status.Counts) string {
 	if s.format == "" {
-		output := fmt.Sprintf("[%3d%% %d/%d", 100*counts.FinishedActions/counts.TotalActions, counts.FinishedActions, counts.TotalActions)
+		output := ""
+		if s.colorize {
+			output += ansi.boldBlue()
+		}
+		output += fmt.Sprintf("[%3d%% %d/%d", 100*counts.FinishedActions/counts.TotalActions, counts.FinishedActions, counts.TotalActions)
 
 		if remaining := remainingTimeString(counts.EstimatedTime); remaining != "" {
 			output += fmt.Sprintf(" %s remaining", remaining)
 		}
-		output += "] "
+		output += "]"
+		if s.colorize {
+			output += ansi.regular()
+		}
+		output += " "
 
 		// Verbose mode: show running jobs count outside brackets
 		if s.verbose && counts.RunningActions > 0 {
+			if s.colorize {
+				output += ansi.boldGreen()
+			}
 			if counts.RunningActions == 1 {
 				output += fmt.Sprintf("(%d job) ", counts.RunningActions)
 			} else {
 				output += fmt.Sprintf("(%d jobs) ", counts.RunningActions)
+			}
+			if s.colorize {
+				output += ansi.regular()
 			}
 		}
 
