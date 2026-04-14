@@ -1,196 +1,4196 @@
-From a644b1e2d9387cc456354151ff8eaf778906b902 Mon Sep 17 00:00:00 2001
-From: dabao1955 <79307765+dabao1955@users.noreply.github.com>
-Date: Thu, 9 Apr 2026 11:49:28 +0800
-Subject: [PATCH] Add CMake build support and Ninja 1.10+ features
+From fa4b5cad2d9f55426d310669e14b646c6888ae4a Mon Sep 17 00:00:00 2001
+From: root <root@localhost>
+Date: Tue, 14 Apr 2026 15:17:43 +0800
+Subject: [PATCH] Backport aosp ninja 1.9.0git
 
-- Add CMakeLists.txt from v1.10.0 with main branch source files
-- Fix EvaluateBindingOnRule to include Scope* target parameter
-- Support multiple outputs with depslog (Ninja 1.10+ feature)
-- Build now works with both configure.py and CMake
 ---
- CMakeLists.txt              | 147 ++++++++++++++++++++++++++++++++++++++++++++++++
- src/lexer.in.cc             |   6 +-
- src/manifest_parser.cc      |  11 ----
- src/manifest_parser_test.cc |   6 +-
- 4 files changed, 155 insertions(+), 14 deletions(-)
- create mode 100644 CMakeLists.txt
+ CMakeLists.txt          |   2 +
+ configure.py            |  15 +-
+ frontend/FRONTEND.md    |  18 +
+ frontend/native.py      |  15 +
+ src/build.cc            | 401 +++++++---------------
+ src/build.h             | 172 +++-------
+ src/clean.cc            |  25 +-
+ src/filebuf.h           |  40 +++
+ src/frontend.pb.h       | 717 ++++++++++++++++++++++++++++++++++++++++
+ src/graph.cc            |  96 ++++--
+ src/graph.h             |  80 ++---
+ src/ninja.cc            | 551 +++++++++++++++++-------------
+ src/proto.cc            |  78 +++++
+ src/proto.h             |  77 +++++
+ src/state.cc            |  33 +-
+ src/status.cc           | 349 +++++++++++++++++++
+ src/status.h            | 153 +++++++++
+ src/subprocess-posix.cc |  76 +++--
+ src/subprocess.h        |  23 +-
+ 19 files changed, 2127 insertions(+), 794 deletions(-)
+ create mode 100644 frontend/FRONTEND.md
+ create mode 100644 frontend/native.py
+ create mode 100644 src/filebuf.h
+ create mode 100644 src/frontend.pb.h
+ create mode 100644 src/proto.cc
+ create mode 100644 src/proto.h
+ create mode 100644 src/status.cc
+ create mode 100644 src/status.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-new file mode 100644
-index 0000000..796d0dd
---- /dev/null
+index 60fd8a1..320d389 100644
+--- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -0,0 +1,105 @@
-+cmake_minimum_required(VERSION 3.15)
-+cmake_policy(SET CMP0091 NEW)
-+project(ninja)
-+
-+if(CMAKE_BUILD_TYPE MATCHES "Release")
-+	cmake_policy(SET CMP0069 NEW)
-+	include(CheckIPOSupported)
-+	check_ipo_supported(RESULT lto_supported OUTPUT error)
-+
-+	if(lto_supported)
-+		message(STATUS "IPO / LTO enabled")
-+		set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
-+	else()
-+		message(STATUS "IPO / LTO not supported: <${error}>")
-+	endif()
-+endif()
-+
-+if(MSVC)
-+	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /GR- /Zc:__cplusplus")
-+else()
-+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated -fdiagnostics-color")
-+endif()
-+
-+# Generate frontend.pb.h from frontend.proto using Python script
-+find_package(Python3 COMPONENTS Interpreter)
-+if(Python3_Interpreter_FOUND)
-+	add_custom_command(
-+		OUTPUT ${CMAKE_SOURCE_DIR}/src/frontend.pb.h
-+		DEPENDS ${CMAKE_SOURCE_DIR}/src/frontend.proto ${CMAKE_SOURCE_DIR}/misc/generate_proto_header.py
-+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/misc/generate_proto_header.py
-+			--proto ${CMAKE_SOURCE_DIR}/src/frontend.proto
-+			--output ${CMAKE_SOURCE_DIR}/src/frontend.pb.h
-+		COMMENT "Generating frontend.pb.h from frontend.proto"
-+	)
-+endif()
-+
-+find_program(RE2C re2c)
-+if(RE2C)
-+	# the depfile parser and ninja lexers are generated using re2c.
-+	function(re2c IN OUT)
-+		add_custom_command(DEPENDS ${IN} OUTPUT ${OUT}
-+			COMMAND ${RE2C} -b -i --no-generation-date -o ${OUT} ${IN}
-+		)
-+	endfunction()
-+	re2c(${CMAKE_SOURCE_DIR}/src/depfile_parser.in.cc ${CMAKE_BINARY_DIR}/depfile_parser.cc)
-+	re2c(${CMAKE_SOURCE_DIR}/src/lexer.in.cc ${CMAKE_BINARY_DIR}/lexer.cc)
-+	add_library(libninja-re2c OBJECT ${CMAKE_BINARY_DIR}/depfile_parser.cc ${CMAKE_BINARY_DIR}/lexer.cc)
-+else()
-+	message(WARNING "re2c was not found; changes to src/*.in.cc will not affect your build.")
-+	add_library(libninja-re2c OBJECT src/depfile_parser.cc src/lexer.cc)
-+endif()
-+target_include_directories(libninja-re2c PRIVATE src)
-+
-+# Core source files all build into ninja library.
-+add_library(libninja OBJECT
-+	src/build_log.cc
-+	src/build.cc
-+	src/clean.cc
-+	src/clparser.cc
-+	src/dyndep.cc
-+	src/dyndep_parser.cc
-+	src/debug_flags.cc
-+	src/deps_log.cc
-+	src/disk_interface.cc
-+	src/edit_distance.cc
-+	src/eval_env.cc
-+	src/graph.cc
-+	src/graphviz.cc
-+	src/line_printer.cc
-+	src/manifest_chunk_parser.cc
-+	src/manifest_parser.cc
-+	src/metrics.cc
-+	src/parser.cc
+@@ -57,8 +57,10 @@ add_library(libninja OBJECT
+ 	src/line_printer.cc
+ 	src/manifest_parser.cc
+ 	src/metrics.cc
 +	src/proto.cc
-+	src/state.cc
+ 	src/parser.cc
+ 	src/state.cc
 +	src/status.cc
-+	src/string_piece_util.cc
-+	src/thread_pool.cc
-+	src/util.cc
-+	src/version.cc
-+)
-+if(WIN32)
-+	target_sources(libninja PRIVATE
-+		src/subprocess-win32.cc
-+		src/includes_normalize-win32.cc
-+		src/msvc_helper-win32.cc
-+		src/msvc_helper_main-win32.cc
-+		src/getopt.c
-+	)
-+	if(MSVC)
-+		target_sources(libninja PRIVATE src/minidump-win32.cc)
-+	endif()
-+else()
-+	target_sources(libninja PRIVATE src/subprocess-posix.cc)
-+endif()
+ 	src/string_piece_util.cc
+ 	src/util.cc
+ 	src/version.cc
+diff --git a/configure.py b/configure.py
+index 7d8ce90..a49edf5 100755
+--- a/configure.py
++++ b/configure.py
+@@ -509,13 +509,14 @@ for name in ['build',
+              'graphviz',
+              'lexer',
+              'line_printer',
+-             'manifest_parser',
+-             'metrics',
+-             'parser',
+-             'state',
+-             'string_piece_util',
+-             'util',
+-             'version']:
++              'manifest_parser',
++              'metrics',
++              'parser',
++              'proto',
++              'state',
++              'string_piece_util',
++              'util',
++              'version']:
+     objs += cxx(name, variables=cxxvariables)
+ if platform.is_windows():
+     for name in ['subprocess-win32',
+diff --git a/frontend/FRONTEND.md b/frontend/FRONTEND.md
+new file mode 100644
+index 0000000..09695a3
+--- /dev/null
++++ b/frontend/FRONTEND.md
+@@ -0,0 +1,18 @@
++Ninja Frontend Interface
++=======================
 +
-+#Fixes GetActiveProcessorCount on MinGW
-+if(MINGW)
-+target_compile_definitions(libninja PRIVATE _WIN32_WINNT=0x0601 __USE_MINGW_ANSI_STDIO=1)
-+endif()
++Ninja can use another program as a frontend to display build status information.
++The frontend is passed using `--frontend` and receives length-delimited status
++messages on file descriptor `3`.
 +
-+# Main executable is library plus main() function.
-+add_executable(ninja_mod src/ninja.cc)
-+target_link_libraries(ninja_mod PRIVATE libninja libninja-re2c)
-\ No newline at end of file
-diff --git a/src/lexer.in.cc b/src/lexer.in.cc
-index 9074570..4f78a92 100644
---- a/src/lexer.in.cc
-+++ b/src/lexer.in.cc
-@@ -426,11 +426,11 @@ void EvaluateBindingInScope(std::string* out_append, StringPiece value,
++To mirror Ninja's normal output:
++
++```
++./ninja --frontend=frontend/native.py
++```
++
++To write serialized output to a file or FIFO:
++
++```
++./ninja --frontend_file=ninja.pb all
++```
+diff --git a/frontend/native.py b/frontend/native.py
+new file mode 100644
+index 0000000..865753f
+--- /dev/null
++++ b/frontend/native.py
+@@ -0,0 +1,15 @@
++#!/usr/bin/env python3
++
++import os
++import sys
++
++
++def main():
++    source = sys.argv[1] if len(sys.argv) > 1 else '/dev/fd/3'
++    with open(source, 'rb', buffering=0) as f:
++        while f.read(1):
++            pass
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/src/build.cc b/src/build.cc
+index cd8df4e..fa846c9 100644
+--- a/src/build.cc
++++ b/src/build.cc
+@@ -16,8 +16,14 @@
+ 
+ #include <assert.h>
+ #include <errno.h>
++#ifndef _WIN32
++#include <stdarg.h>
++#include <sys/wait.h>
++#include <unistd.h>
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
++
+ #include <functional>
+ 
+ #ifdef _WIN32
+@@ -36,7 +42,11 @@
+ #include "deps_log.h"
+ #include "disk_interface.h"
+ #include "graph.h"
++#ifndef _WIN32
++#include "proto.h"
++#endif
+ #include "state.h"
++#include "status.h"
+ #include "subprocess.h"
+ #include "util.h"
+ 
+@@ -65,252 +75,19 @@ bool DryRunCommandRunner::StartCommand(Edge* edge) {
  }
  
- bool EvaluateBindingOnRule(std::string* out_append, StringPiece value,
--                           EdgeEval* edge_eval, std::string* err) {
-+                           EdgeEval* edge_eval, Scope* target, std::string* err) {
-   bool result = true;
-   EvaluateBinding(out_append, value,
--      [out_append, edge_eval, &result, err](const HashedStrView& var) {
--    result = result && edge_eval->EvaluateVariable(out_append, var, err);
-+      [out_append, edge_eval, target, &result, err](const HashedStrView& var) {
-+    result = result && edge_eval->EvaluateVariable(out_append, var, target, err);
-   });
-   return result;
+ bool DryRunCommandRunner::WaitForCommand(Result* result) {
+-   if (finished_.empty())
+-     return false;
++  if (finished_.empty())
++    return false;
+ 
+-   result->status = ExitSuccess;
+-   result->edge = finished_.front();
+-   finished_.pop();
+-   return true;
++  result->status = ExitSuccess;
++  result->edge = finished_.front();
++  finished_.pop();
++  return true;
  }
-
-diff --git a/src/manifest_parser.cc b/src/manifest_parser.cc
-index 4823779..bc66d0b 100644
---- a/src/manifest_parser.cc
-+++ b/src/manifest_parser.cc
-@@ -537,17 +537,6 @@ bool ManifestLoader::AddEdgeToGraph(Edge* edge, const LoadedFile& file,
+ 
+ }  // namespace
+ 
+-BuildStatus::BuildStatus(const BuildConfig& config)
+-    : config_(config),
+-      start_time_millis_(GetTimeMillis()),
+-      started_edges_(0), finished_edges_(0), total_edges_(0),
+-      progress_status_format_(NULL),
+-      overall_rate_(), current_rate_(config.parallelism) {
+-
+-  // Don't do anything fancy in verbose mode.
+-  if (config_.verbosity != BuildConfig::NORMAL)
+-    printer_.set_smart_terminal(false);
+-
+-  progress_status_format_ = getenv("NINJA_STATUS");
+-  if (!progress_status_format_)
+-    progress_status_format_ = "[%f/%t] ";
+-}
+-
+-void BuildStatus::PlanHasTotalEdges(int total) {
+-  total_edges_ = total;
+-}
+-
+-void BuildStatus::BuildEdgeStarted(const Edge* edge) {
+-  assert(running_edges_.find(edge) == running_edges_.end());
+-  int start_time = (int)(GetTimeMillis() - start_time_millis_);
+-  running_edges_.insert(make_pair(edge, start_time));
+-  ++started_edges_;
+-
+-  if (edge->use_console() || printer_.is_smart_terminal())
+-    PrintStatus(edge, kEdgeStarted);
+-
+-  if (edge->use_console())
+-    printer_.SetConsoleLocked(true);
+-}
+-
+-void BuildStatus::BuildEdgeFinished(Edge* edge,
+-                                    bool success,
+-                                    const string& output,
+-                                    int* start_time,
+-                                    int* end_time) {
+-  int64_t now = GetTimeMillis();
+-
+-  ++finished_edges_;
+-
+-  RunningEdgeMap::iterator i = running_edges_.find(edge);
+-  *start_time = i->second;
+-  *end_time = (int)(now - start_time_millis_);
+-  running_edges_.erase(i);
+-
+-  if (edge->use_console())
+-    printer_.SetConsoleLocked(false);
+-
+-  if (config_.verbosity == BuildConfig::QUIET)
+-    return;
+-
+-  if (!edge->use_console())
+-    PrintStatus(edge, kEdgeFinished);
+-
+-  // Print the command that is spewing before printing its output.
+-  if (!success) {
+-    string outputs;
+-    for (vector<Node*>::const_iterator o = edge->outputs_.begin();
+-         o != edge->outputs_.end(); ++o)
+-      outputs += (*o)->path() + " ";
+-
+-    if (printer_.supports_color()) {
+-        printer_.PrintOnNewLine("\x1B[31m" "FAILED: " "\x1B[0m" + outputs + "\n");
+-    } else {
+-        printer_.PrintOnNewLine("FAILED: " + outputs + "\n");
+-    }
+-    printer_.PrintOnNewLine(edge->EvaluateCommand() + "\n");
+-  }
+-
+-  if (!output.empty()) {
+-    // ninja sets stdout and stderr of subprocesses to a pipe, to be able to
+-    // check if the output is empty. Some compilers, e.g. clang, check
+-    // isatty(stderr) to decide if they should print colored output.
+-    // To make it possible to use colored output with ninja, subprocesses should
+-    // be run with a flag that forces them to always print color escape codes.
+-    // To make sure these escape codes don't show up in a file if ninja's output
+-    // is piped to a file, ninja strips ansi escape codes again if it's not
+-    // writing to a |smart_terminal_|.
+-    // (Launching subprocesses in pseudo ttys doesn't work because there are
+-    // only a few hundred available on some systems, and ninja can launch
+-    // thousands of parallel compile commands.)
+-    string final_output;
+-    if (!printer_.supports_color())
+-      final_output = StripAnsiEscapeCodes(output);
+-    else
+-      final_output = output;
+-
+-#ifdef _WIN32
+-    // Fix extra CR being added on Windows, writing out CR CR LF (#773)
+-    _setmode(_fileno(stdout), _O_BINARY);  // Begin Windows extra CR fix
+-#endif
+-
+-    printer_.PrintOnNewLine(final_output);
+-
+-#ifdef _WIN32
+-    _setmode(_fileno(stdout), _O_TEXT);  // End Windows extra CR fix
+-#endif
+-  }
+-}
+-
+-void BuildStatus::BuildLoadDyndeps() {
+-  // The DependencyScan calls EXPLAIN() to print lines explaining why
+-  // it considers a portion of the graph to be out of date.  Normally
+-  // this is done before the build starts, but our caller is about to
+-  // load a dyndep file during the build.  Doing so may generate more
+-  // exlanation lines (via fprintf directly to stderr), but in an
+-  // interactive console the cursor is currently at the end of a status
+-  // line.  Start a new line so that the first explanation does not
+-  // append to the status line.  After the explanations are done a
+-  // new build status line will appear.
+-  if (g_explaining)
+-    printer_.PrintOnNewLine("");
+-}
+-
+-void BuildStatus::BuildStarted() {
+-  overall_rate_.Restart();
+-  current_rate_.Restart();
+-}
+-
+-void BuildStatus::BuildFinished() {
+-  printer_.SetConsoleLocked(false);
+-  printer_.PrintOnNewLine("");
+-}
+-
+-string BuildStatus::FormatProgressStatus(
+-    const char* progress_status_format, EdgeStatus status) const {
+-  string out;
+-  char buf[32];
+-  int percent;
+-  for (const char* s = progress_status_format; *s != '\0'; ++s) {
+-    if (*s == '%') {
+-      ++s;
+-      switch (*s) {
+-      case '%':
+-        out.push_back('%');
+-        break;
+-
+-        // Started edges.
+-      case 's':
+-        snprintf(buf, sizeof(buf), "%d", started_edges_);
+-        out += buf;
+-        break;
+-
+-        // Total edges.
+-      case 't':
+-        snprintf(buf, sizeof(buf), "%d", total_edges_);
+-        out += buf;
+-        break;
+-
+-        // Running edges.
+-      case 'r': {
+-        int running_edges = started_edges_ - finished_edges_;
+-        // count the edge that just finished as a running edge
+-        if (status == kEdgeFinished)
+-          running_edges++;
+-        snprintf(buf, sizeof(buf), "%d", running_edges);
+-        out += buf;
+-        break;
+-      }
+-
+-        // Unstarted edges.
+-      case 'u':
+-        snprintf(buf, sizeof(buf), "%d", total_edges_ - started_edges_);
+-        out += buf;
+-        break;
+-
+-        // Finished edges.
+-      case 'f':
+-        snprintf(buf, sizeof(buf), "%d", finished_edges_);
+-        out += buf;
+-        break;
+-
+-        // Overall finished edges per second.
+-      case 'o':
+-        overall_rate_.UpdateRate(finished_edges_);
+-        SnprintfRate(overall_rate_.rate(), buf, "%.1f");
+-        out += buf;
+-        break;
+-
+-        // Current rate, average over the last '-j' jobs.
+-      case 'c':
+-        current_rate_.UpdateRate(finished_edges_);
+-        SnprintfRate(current_rate_.rate(), buf, "%.1f");
+-        out += buf;
+-        break;
+-
+-        // Percentage
+-      case 'p':
+-        percent = (100 * finished_edges_) / total_edges_;
+-        snprintf(buf, sizeof(buf), "%3i%%", percent);
+-        out += buf;
+-        break;
+-
+-      case 'e': {
+-        double elapsed = overall_rate_.Elapsed();
+-        snprintf(buf, sizeof(buf), "%.3f", elapsed);
+-        out += buf;
+-        break;
+-      }
+-
+-      default:
+-        Fatal("unknown placeholder '%%%c' in $NINJA_STATUS", *s);
+-        return "";
+-      }
+-    } else {
+-      out.push_back(*s);
+-    }
+-  }
+-
+-  return out;
+-}
+-
+-void BuildStatus::PrintStatus(const Edge* edge, EdgeStatus status) {
+-  if (config_.verbosity == BuildConfig::QUIET)
+-    return;
+-
+-  bool force_full_command = config_.verbosity == BuildConfig::VERBOSE;
+-
+-  string to_print = edge->GetBinding("description");
+-  if (to_print.empty() || force_full_command)
+-    to_print = edge->GetBinding("command");
+-
+-  to_print = FormatProgressStatus(progress_status_format_, status) + to_print;
+-
+-  printer_.Print(to_print,
+-                 force_full_command ? LinePrinter::FULL : LinePrinter::ELIDE);
+-}
+-
+ Plan::Plan(Builder* builder)
+-  : builder_(builder)
+-  , command_edges_(0)
+-  , wanted_edges_(0)
+-{}
++    : builder_(builder), command_edges_(0), wanted_edges_(0) {}
+ 
+ void Plan::Reset() {
+   command_edges_ = 0;
+@@ -331,7 +108,8 @@ bool Plan::AddSubTarget(const Node* node, const Node* dependent, string* err,
+       string referenced;
+       if (dependent)
+         referenced = ", needed by '" + dependent->path() + "',";
+-      *err = "'" + node->path() + "'" + referenced + " missing "
++      *err = "'" + node->path() + "'" + referenced +
++             " missing "
+              "and no known rule to make it";
+     }
+     return false;
+@@ -341,9 +119,10 @@ bool Plan::AddSubTarget(const Node* node, const Node* dependent, string* err,
+     return false;  // Don't need to do anything.
+ 
+   // If an entry in want_ does not already exist for edge, create an entry which
+-  // maps to kWantNothing, indicating that we do not want to build this entry itself.
++  // maps to kWantNothing, indicating that we do not want to build this entry
++  // itself.
+   pair<map<Edge*, Want>::iterator, bool> want_ins =
+-    want_.insert(make_pair(edge, kWantNothing));
++      want_.insert(make_pair(edge, kWantNothing));
+   Want& want = want_ins.first->second;
+ 
+   if (dyndep_walk && want == kWantToFinish)
+@@ -392,8 +171,9 @@ void Plan::ScheduleWork(map<Edge*, Want>::iterator want_e) {
+   if (want_e->second == kWantToFinish) {
+     // This edge has already been scheduled.  We can get here again if an edge
+     // and one of its dependencies share an order-only input, or if a node
+-    // duplicates an out edge (see https://github.com/ninja-build/ninja/pull/519).
+-    // Avoid scheduling the work again.
++    // duplicates an out edge (see
++    // https://github.com/ninja-build/ninja/pull/519). Avoid scheduling the work
++    // again.
+     return;
+   }
+   assert(want_e->second == kWantToStart);
+@@ -492,9 +272,9 @@ bool Plan::CleanNode(DependencyScan* scan, Node* node, string* err) {
+ 
+     // If all non-order-only inputs for this edge are now clean,
+     // we might have changed the dirty state of the outputs.
+-    vector<Node*>::iterator
+-        begin = (*oe)->inputs_.begin(),
+-        end = (*oe)->inputs_.end() - (*oe)->order_only_deps_;
++    vector<Node*>::iterator begin = (*oe)->inputs_.begin(),
++                            end =
++                                (*oe)->inputs_.end() - (*oe)->order_only_deps_;
+ #if __cplusplus < 201703L
+ #define MEM_FN mem_fun
+ #else
+@@ -512,8 +292,8 @@ bool Plan::CleanNode(DependencyScan* scan, Node* node, string* err) {
+       // If the edge isn't dirty, clean the outputs and mark the edge as not
+       // wanted.
+       bool outputs_dirty = false;
+-      if (!scan->RecomputeOutputsDirty(*oe, most_recent_input,
+-                                       &outputs_dirty, err)) {
++      if (!scan->RecomputeOutputsDirty(*oe, most_recent_input, &outputs_dirty,
++                                       err)) {
+         return false;
+       }
+       if (!outputs_dirty) {
+@@ -567,8 +347,9 @@ bool Plan::DyndepsLoaded(DependencyScan* scan, const Node* node,
+ 
+   // Walk dyndep-discovered portion of the graph to add it to the build plan.
+   std::set<Edge*> dyndep_walk;
+-  for (std::vector<DyndepFile::const_iterator>::iterator
+-       oei = dyndep_roots.begin(); oei != dyndep_roots.end(); ++oei) {
++  for (std::vector<DyndepFile::const_iterator>::iterator oei =
++           dyndep_roots.begin();
++       oei != dyndep_roots.end(); ++oei) {
+     DyndepFile::const_iterator oe = *oei;
+     for (vector<Node*>::const_iterator i = oe->second.implicit_inputs_.begin();
+          i != oe->second.implicit_inputs_.end(); ++i) {
+@@ -589,8 +370,8 @@ bool Plan::DyndepsLoaded(DependencyScan* scan, const Node* node,
+   }
+ 
+   // See if any encountered edges are now ready.
+-  for (set<Edge*>::iterator wi = dyndep_walk.begin();
+-       wi != dyndep_walk.end(); ++wi) {
++  for (set<Edge*>::iterator wi = dyndep_walk.begin(); wi != dyndep_walk.end();
++       ++wi) {
+     map<Edge*, Want>::iterator want_e = want_.find(*wi);
+     if (want_e == want_.end())
+       continue;
+@@ -610,8 +391,8 @@ bool Plan::RefreshDyndepDependents(DependencyScan* scan, const Node* node,
+ 
+   // Update the dirty state of all dependents and check if their edges
+   // have become wanted.
+-  for (set<Node*>::iterator i = dependents.begin();
+-       i != dependents.end(); ++i) {
++  for (set<Node*>::iterator i = dependents.begin(); i != dependents.end();
++       ++i) {
+     Node* n = *i;
+ 
+     // Check if this dependent node is now dirty.  Also checks for new cycles.
+@@ -657,7 +438,8 @@ void Plan::UnmarkDependents(const Node* node, set<Node*>* dependents) {
+ 
+ void Plan::Dump() const {
+   printf("pending: %d\n", (int)want_.size());
+-  for (map<Edge*, Want>::const_iterator e = want_.begin(); e != want_.end(); ++e) {
++  for (map<Edge*, Want>::const_iterator e = want_.begin(); e != want_.end();
++       ++e) {
+     if (e->second != kWantNothing)
+       printf("want ");
+     e->first->Dump();
+@@ -694,14 +476,16 @@ void RealCommandRunner::Abort() {
+ bool RealCommandRunner::CanRunMore() const {
+   size_t subproc_number =
+       subprocs_.running_.size() + subprocs_.finished_.size();
+-  return (int)subproc_number < config_.parallelism
+-    && ((subprocs_.running_.empty() || config_.max_load_average <= 0.0f)
+-        || GetLoadAverage() < config_.max_load_average);
++  return (int)subproc_number < config_.parallelism &&
++         ((subprocs_.running_.empty() || config_.max_load_average <= 0.0f) ||
++          GetLoadAverage() < config_.max_load_average);
+ }
+ 
+ bool RealCommandRunner::StartCommand(Edge* edge) {
+-  string command = edge->EvaluateCommand();
+-  Subprocess* subproc = subprocs_.Add(command, edge->use_console());
++  EdgeCommand command;
++  command.command = edge->EvaluateCommand();
++  command.use_console = edge->use_console();
++  Subprocess* subproc = subprocs_.Add(command);
+   if (!subproc)
+     return false;
+   subproc_to_edge_.insert(make_pair(subproc, edge));
+@@ -719,6 +503,9 @@ bool RealCommandRunner::WaitForCommand(Result* result) {
+ 
+   result->status = subproc->Finish();
+   result->output = subproc->GetOutput();
++#ifndef _WIN32
++  result->rusage = *subproc->GetUsage();
++#endif
+ 
+   map<const Subprocess*, Edge*>::iterator e = subproc_to_edge_.find(subproc);
+   result->edge = e->second;
+@@ -728,14 +515,15 @@ bool RealCommandRunner::WaitForCommand(Result* result) {
+   return true;
+ }
+ 
+-Builder::Builder(State* state, const BuildConfig& config,
+-                 BuildLog* build_log, DepsLog* deps_log,
+-                 DiskInterface* disk_interface)
+-    : state_(state), config_(config),
+-      plan_(this), disk_interface_(disk_interface),
++Builder::Builder(State* state, const BuildConfig& config, BuildLog* build_log,
++                 DepsLog* deps_log, DiskInterface* disk_interface,
++                 Status* status, int64_t start_time_millis)
++    : state_(state), config_(config), plan_(this),
++      disk_interface_(disk_interface),
+       scan_(state, build_log, deps_log, disk_interface,
+-            &config_.depfile_parser_options) {
+-  status_ = new BuildStatus(config);
++            &config_.depfile_parser_options),
++      start_time_millis_(start_time_millis) {
++  status_ = status;
+ }
+ 
+ Builder::~Builder() {
+@@ -901,7 +689,8 @@ bool Builder::StartEdge(Edge* edge, string* err) {
+   if (edge->is_phony())
+     return true;
+ 
+-  status_->BuildEdgeStarted(edge);
++  int64_t start_time_millis = GetTimeMillis() - start_time_millis_;
++  status_->BuildEdgeStarted(edge, start_time_millis);
+ 
+   // Create directories necessary for outputs.
+   // XXX: this will block; do we care?
+@@ -933,6 +722,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+   METRIC_RECORD("FinishCommand");
+ 
+   Edge* edge = result->edge;
++  bool phony_output = edge->IsPhonyOutput();
+ 
+   // First try to extract dependencies from the result, if any.
+   // This must happen first as it filters the command output (we want
+@@ -942,7 +732,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+   vector<Node*> deps_nodes;
+   string deps_type = edge->GetBinding("deps");
+   const string deps_prefix = edge->GetBinding("msvc_deps_prefix");
+-  if (!deps_type.empty()) {
++  if (!deps_type.empty() && !phony_output) {
+     string extract_err;
+     if (!ExtractDeps(result, deps_type, deps_prefix, &deps_nodes,
+                      &extract_err) &&
+@@ -954,9 +744,10 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
      }
    }
  
--  // Multiple outputs aren't (yet?) supported with depslog.
--  std::string deps_type;
--  if (!edge->EvaluateVariable(&deps_type, kDeps, edge->pos_.scope(), err, EdgeEval::kParseTime))
--    return false;
--  if (!deps_type.empty() && edge->outputs_.size() - edge->implicit_outs_ > 1) {
--    return DecorateError(file, edge->parse_state_.final_diag_pos,
--                         "multiple outputs aren't (yet?) supported by depslog; "
--                         "bring this up on the mailing list if it affects you",
--                         err);
+-  int start_time, end_time;
+-  status_->BuildEdgeFinished(edge, result->success(), result->output,
+-                             &start_time, &end_time);
++  int64_t end_time_millis = GetTimeMillis() - start_time_millis_;
++  int start_time = 0;
++  int end_time = static_cast<int>(end_time_millis);
++  status_->BuildEdgeFinished(edge, end_time_millis, result);
+ 
+   // The rest of this function only applies to successful commands.
+   if (!result->success()) {
+@@ -969,11 +760,48 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+   if (!config_.dry_run) {
+     bool node_cleaned = false;
+ 
++    TimeStamp newest_input = 0;
++    Node* newest_input_node = NULL;
++    for (vector<Node*>::iterator i = edge->inputs_.begin();
++         i != edge->inputs_.end() - edge->order_only_deps_; ++i) {
++      TimeStamp input_mtime = disk_interface_->Stat((*i)->path(), err);
++      if (input_mtime == -1)
++        return false;
++      if (input_mtime > newest_input) {
++        newest_input = input_mtime;
++        newest_input_node = *i;
++      }
++    }
++
+     for (vector<Node*>::iterator o = edge->outputs_.begin();
+          o != edge->outputs_.end(); ++o) {
+       TimeStamp new_mtime = disk_interface_->Stat((*o)->path(), err);
+       if (new_mtime == -1)
+         return false;
++
++      if (config_.uses_phony_outputs && !phony_output) {
++        if (new_mtime == 0) {
++          if (!result->output.empty())
++            result->output.append("\n");
++          result->output.append(
++              "ninja: output file missing after successful execution: ");
++          result->output.append((*o)->path());
++          if (config_.missing_output_file_should_err)
++            result->status = ExitFailure;
++        } else if (!restat && newest_input_node && new_mtime < newest_input) {
++          if (!result->output.empty())
++            result->output.append("\n");
++          result->output.append(
++              "ninja: Missing `restat`? An output file is older than the most "
++              "recent input:\n output: ");
++          result->output.append((*o)->path());
++          result->output.append("\n  input: ");
++          result->output.append(newest_input_node->path());
++          if (config_.old_output_should_err)
++            result->status = ExitFailure;
++        }
++      }
++
+       if (new_mtime > output_mtime)
+         output_mtime = new_mtime;
+       if ((*o)->mtime() == new_mtime && restat) {
+@@ -990,14 +818,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+       TimeStamp restat_mtime = 0;
+       // If any output was cleaned, find the most recent mtime of any
+       // (existing) non-order-only input or the depfile.
+-      for (vector<Node*>::iterator i = edge->inputs_.begin();
+-           i != edge->inputs_.end() - edge->order_only_deps_; ++i) {
+-        TimeStamp input_mtime = disk_interface_->Stat((*i)->path(), err);
+-        if (input_mtime == -1)
+-          return false;
+-        if (input_mtime > restat_mtime)
+-          restat_mtime = input_mtime;
+-      }
++      restat_mtime = newest_input;
+ 
+       string depfile = edge->GetUnescapedDepfile();
+       if (restat_mtime != 0 && deps_type.empty() && !depfile.empty()) {
+@@ -1016,6 +837,9 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+     }
+   }
+ 
++  if (!result->success())
++    return plan_.EdgeFinished(edge, Plan::kEdgeFailed, err);
++
+   if (!plan_.EdgeFinished(edge, Plan::kEdgeSucceeded, err))
+     return false;
+ 
+@@ -1024,7 +848,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+   if (!rspfile.empty() && !g_keep_rsp)
+     disk_interface_->RemoveFile(rspfile);
+ 
+-  if (scan_.build_log()) {
++  if (scan_.build_log() && !phony_output) {
+     if (!scan_.build_log()->RecordCommand(edge, start_time, end_time,
+                                           output_mtime)) {
+       *err = string("Error writing to build log: ") + strerror(errno);
+@@ -1032,7 +856,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+     }
+   }
+ 
+-  if (!deps_type.empty() && !config_.dry_run) {
++  if (!deps_type.empty() && !config_.dry_run && !phony_output) {
+     assert(edge->outputs_.size() >= 1 && "should have been rejected by parser");
+     for (std::vector<Node*>::const_iterator o = edge->outputs_.begin();
+          o != edge->outputs_.end(); ++o) {
+@@ -1049,10 +873,8 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
+ }
+ 
+ bool Builder::ExtractDeps(CommandRunner::Result* result,
+-                          const string& deps_type,
+-                          const string& deps_prefix,
+-                          vector<Node*>* deps_nodes,
+-                          string* err) {
++                          const string& deps_type, const string& deps_prefix,
++                          vector<Node*>* deps_nodes, string* err) {
+   if (deps_type == "msvc") {
+     CLParser parser;
+     string output;
+@@ -1067,8 +889,7 @@ bool Builder::ExtractDeps(CommandRunner::Result* result,
+       // complexity in IncludesNormalize::Relativize.
+       deps_nodes->push_back(state_->GetNode(*i, ~0u));
+     }
+-  } else
+-  if (deps_type == "gcc") {
++  } else if (deps_type == "gcc") {
+     string depfile = result->edge->GetUnescapedDepfile();
+     if (depfile.empty()) {
+       *err = string("edge with deps=gcc but no depfile makes no sense");
+diff --git a/src/build.h b/src/build.h
+index 97773c4..1d7b178 100644
+--- a/src/build.h
++++ b/src/build.h
+@@ -16,6 +16,10 @@
+ #define NINJA_BUILD_H_
+ 
+ #include <cstdio>
++#ifndef _WIN32
++#include <sys/resource.h>
++#include <sys/types.h>
++#endif
+ #include <map>
+ #include <memory>
+ #include <queue>
+@@ -24,19 +28,24 @@
+ #include <vector>
+ 
+ #include "depfile_parser.h"
+-#include "graph.h"  // XXX needed for DependencyScan; should rearrange.
+ #include "exit_status.h"
++#include "graph.h"  // XXX needed for DependencyScan; should rearrange.
+ #include "line_printer.h"
+ #include "metrics.h"
+ #include "util.h"  // int64_t
+ 
++#ifndef _WIN32
++#include "filebuf.h"
++#include "frontend.pb.h"
++#endif
++
+ struct BuildLog;
+-struct BuildStatus;
+ struct Builder;
+ struct DiskInterface;
+ struct Edge;
+ struct Node;
+ struct State;
++struct Status;
+ 
+ /// Plan stores the state of a build plan: what we intend to build,
+ /// which steps we're ready to execute.
+@@ -58,10 +67,7 @@ struct Plan {
+   /// Dumps the current state of the plan.
+   void Dump() const;
+ 
+-  enum EdgeResult {
+-    kEdgeFailed,
+-    kEdgeSucceeded
+-  };
++  enum EdgeResult { kEdgeFailed, kEdgeSucceeded };
+ 
+   /// Mark an edge as done building (whether it succeeded or failed).
+   /// If any of the edge's outputs are dyndep bindings of their dependents,
+@@ -83,8 +89,10 @@ struct Plan {
+   /// by information loaded from a dyndep file.
+   bool DyndepsLoaded(DependencyScan* scan, const Node* node,
+                      const DyndepFile& ddf, string* err);
+-private:
+-  bool RefreshDyndepDependents(DependencyScan* scan, const Node* node, string* err);
++
++ private:
++  bool RefreshDyndepDependents(DependencyScan* scan, const Node* node,
++                               string* err);
+   void UnmarkDependents(const Node* node, set<Node*>* dependents);
+   bool AddSubTarget(const Node* node, const Node* dependent, string* err,
+                     set<Edge*>* dyndep_walk);
+@@ -96,8 +104,7 @@ private:
+   bool NodeFinished(Node* node, string* err);
+ 
+   /// Enumerate possible steps we want for an edge.
+-  enum Want
+-  {
++  enum Want {
+     /// We do not want to build the edge, but we might want to build one of
+     /// its dependents.
+     kWantNothing,
+@@ -146,6 +153,9 @@ struct CommandRunner {
+     Result() : edge(NULL) {}
+     Edge* edge;
+     ExitStatus status;
++#ifndef _WIN32
++    struct rusage rusage;
++#endif
+     string output;
+     bool success() const { return status == ExitSuccess; }
+   };
+@@ -158,11 +168,16 @@ struct CommandRunner {
+ 
+ /// Options (e.g. verbosity, parallelism) passed to a build.
+ struct BuildConfig {
+-  BuildConfig() : verbosity(NORMAL), dry_run(false), parallelism(1),
+-                  failures_allowed(1), max_load_average(-0.0f) {}
++  BuildConfig()
++      : verbosity(NORMAL), dry_run(false), parallelism(1), failures_allowed(1),
++        max_load_average(-0.0f), frontend(NULL), frontend_file(NULL),
++        uses_phony_outputs(false), pre_remove_output_files(false),
++        ninja_log_as_weight_list(false), missing_output_file_should_err(true),
++        old_output_should_err(true) {}
+ 
+   enum Verbosity {
+     NORMAL,
++    NO_STATUS_UPDATE,
+     QUIET,  // No output -- used when testing.
+     VERBOSE
+   };
+@@ -174,13 +189,24 @@ struct BuildConfig {
+   /// means that we do not have any limit.
+   double max_load_average;
+   DepfileParserOptions depfile_parser_options;
++
++#ifndef _WIN32
++  const char* frontend;
++  const char* frontend_file;
++#endif
++
++  bool uses_phony_outputs;
++  bool pre_remove_output_files;
++  bool ninja_log_as_weight_list;
++  bool missing_output_file_should_err;
++  bool old_output_should_err;
+ };
+ 
+ /// Builder wraps the build process: starting commands, updating status.
+ struct Builder {
+-  Builder(State* state, const BuildConfig& config,
+-          BuildLog* build_log, DepsLog* deps_log,
+-          DiskInterface* disk_interface);
++  Builder(State* state, const BuildConfig& config, BuildLog* build_log,
++          DepsLog* deps_log, DiskInterface* disk_interface, Status* status,
++          int64_t start_time_millis);
+   ~Builder();
+ 
+   /// Clean up after interrupted commands by deleting output files.
+@@ -206,9 +232,7 @@ struct Builder {
+   bool FinishCommand(CommandRunner::Result* result, string* err);
+ 
+   /// Used for tests.
+-  void SetBuildLog(BuildLog* log) {
+-    scan_.set_build_log(log);
+-  }
++  void SetBuildLog(BuildLog* log) { scan_.set_build_log(log); }
+ 
+   /// Load the dyndep information provided by the given node.
+   bool LoadDyndeps(Node* node, string* err);
+@@ -221,118 +245,20 @@ struct Builder {
+ #else
+   unique_ptr<CommandRunner> command_runner_;  // auto_ptr was removed in C++17.
+ #endif
+-  BuildStatus* status_;
++  Status* status_;
+ 
+  private:
+-   bool ExtractDeps(CommandRunner::Result* result, const string& deps_type,
+-                    const string& deps_prefix, vector<Node*>* deps_nodes,
+-                    string* err);
++  bool ExtractDeps(CommandRunner::Result* result, const string& deps_type,
++                   const string& deps_prefix, vector<Node*>* deps_nodes,
++                   string* err);
+ 
+   DiskInterface* disk_interface_;
+   DependencyScan scan_;
+-
+-  // Unimplemented copy ctor and operator= ensure we don't copy the auto_ptr.
+-  Builder(const Builder &other);        // DO NOT IMPLEMENT
+-  void operator=(const Builder &other); // DO NOT IMPLEMENT
+-};
+-
+-/// Tracks the status of a build: completion fraction, printing updates.
+-struct BuildStatus {
+-  explicit BuildStatus(const BuildConfig& config);
+-  void PlanHasTotalEdges(int total);
+-  void BuildEdgeStarted(const Edge* edge);
+-  void BuildEdgeFinished(Edge* edge, bool success, const string& output,
+-                         int* start_time, int* end_time);
+-  void BuildLoadDyndeps();
+-  void BuildStarted();
+-  void BuildFinished();
+-
+-  enum EdgeStatus {
+-    kEdgeStarted,
+-    kEdgeFinished,
+-  };
+-
+-  /// Format the progress status string by replacing the placeholders.
+-  /// See the user manual for more information about the available
+-  /// placeholders.
+-  /// @param progress_status_format The format of the progress status.
+-  /// @param status The status of the edge.
+-  string FormatProgressStatus(const char* progress_status_format,
+-                              EdgeStatus status) const;
+-
+- private:
+-  void PrintStatus(const Edge* edge, EdgeStatus status);
+-
+-  const BuildConfig& config_;
+-
+-  /// Time the build started.
+   int64_t start_time_millis_;
+ 
+-  int started_edges_, finished_edges_, total_edges_;
+-
+-  /// Map of running edge to time the edge started running.
+-  typedef map<const Edge*, int> RunningEdgeMap;
+-  RunningEdgeMap running_edges_;
+-
+-  /// Prints progress output.
+-  LinePrinter printer_;
+-
+-  /// The custom progress status format to use.
+-  const char* progress_status_format_;
+-
+-  template<size_t S>
+-  void SnprintfRate(double rate, char(&buf)[S], const char* format) const {
+-    if (rate == -1)
+-      snprintf(buf, S, "?");
+-    else
+-      snprintf(buf, S, format, rate);
 -  }
 -
-   // Lookup, validate, and save any dyndep binding.  It will be used later
-   // to load generated dependency information dynamically, but it must
-   // be one of our manifest-specified inputs.
-diff --git a/src/manifest_parser_test.cc b/src/manifest_parser_test.cc
-index c9bf73f..d1fb346 100644
---- a/src/manifest_parser_test.cc
-+++ b/src/manifest_parser_test.cc
-@@ -931,14 +931,14 @@ TEST_F(ParserTest, MultipleImplicitOutputsWithDeps) {
+-  struct RateInfo {
+-    RateInfo() : rate_(-1) {}
+-
+-    void Restart() { stopwatch_.Restart(); }
+-    double Elapsed() const { return stopwatch_.Elapsed(); }
+-    double rate() { return rate_; }
+-
+-    void UpdateRate(int edges) {
+-      if (edges && stopwatch_.Elapsed())
+-        rate_ = edges / stopwatch_.Elapsed();
+-    }
+-
+-  private:
+-    double rate_;
+-    Stopwatch stopwatch_;
+-  };
+-
+-  struct SlidingRateInfo {
+-    SlidingRateInfo(int n) : rate_(-1), N(n), last_update_(-1) {}
+-
+-    void Restart() { stopwatch_.Restart(); }
+-    double rate() { return rate_; }
+-
+-    void UpdateRate(int update_hint) {
+-      if (update_hint == last_update_)
+-        return;
+-      last_update_ = update_hint;
+-
+-      if (times_.size() == N)
+-        times_.pop();
+-      times_.push(stopwatch_.Elapsed());
+-      if (times_.back() != times_.front())
+-        rate_ = times_.size() / (times_.back() - times_.front());
+-    }
+-
+-  private:
+-    double rate_;
+-    Stopwatch stopwatch_;
+-    const size_t N;
+-    queue<double> times_;
+-    int last_update_;
+-  };
+-
+-  mutable RateInfo overall_rate_;
+-  mutable SlidingRateInfo current_rate_;
++  // Unimplemented copy ctor and operator= ensure we don't copy the auto_ptr.
++  Builder(const Builder& other);         // DO NOT IMPLEMENT
++  void operator=(const Builder& other);  // DO NOT IMPLEMENT
+ };
+ 
+ #endif  // NINJA_BUILD_H_
+diff --git a/src/clean.cc b/src/clean.cc
+index ec6e7d7..b75a808 100644
+--- a/src/clean.cc
++++ b/src/clean.cc
+@@ -22,18 +22,11 @@
+ #include "state.h"
+ #include "util.h"
+ 
+-Cleaner::Cleaner(State* state,
+-                 const BuildConfig& config,
++Cleaner::Cleaner(State* state, const BuildConfig& config,
+                  DiskInterface* disk_interface)
+-  : state_(state),
+-    config_(config),
+-    dyndep_loader_(state, disk_interface),
+-    removed_(),
+-    cleaned_(),
+-    cleaned_files_count_(0),
+-    disk_interface_(disk_interface),
+-    status_(0) {
+-}
++    : state_(state), config_(config), dyndep_loader_(state, disk_interface),
++      removed_(), cleaned_(), cleaned_files_count_(0),
++      disk_interface_(disk_interface), status_(0) {}
+ 
+ int Cleaner::RemoveFile(const string& path) {
+   return disk_interface_->RemoveFile(path);
+@@ -108,7 +101,7 @@ int Cleaner::CleanAll(bool generator) {
+   for (vector<Edge*>::iterator e = state_->edges_.begin();
+        e != state_->edges_.end(); ++e) {
+     // Do not try to remove phony targets
+-    if ((*e)->is_phony())
++    if ((*e)->is_phony() || (*e)->IsPhonyOutput())
+       continue;
+     // Do not remove generator's files unless generator specified.
+     if (!generator && (*e)->GetBindingBool("generator"))
+@@ -127,7 +120,8 @@ int Cleaner::CleanAll(bool generator) {
+ int Cleaner::CleanDead(const BuildLog::Entries& entries) {
+   Reset();
+   PrintHeader();
+-  for (BuildLog::Entries::const_iterator i = entries.begin(); i != entries.end(); ++i) {
++  for (BuildLog::Entries::const_iterator i = entries.begin();
++       i != entries.end(); ++i) {
+     Node* n = state_->LookupNode(i->first);
+     if (!n || !n->in_edge()) {
+       Remove(i->first.AsString());
+@@ -140,7 +134,7 @@ int Cleaner::CleanDead(const BuildLog::Entries& entries) {
+ void Cleaner::DoCleanTarget(Node* target) {
+   if (Edge* e = target->in_edge()) {
+     // Do not try to remove phony targets
+-    if (!e->is_phony()) {
++    if (!e->is_phony() && !e->IsPhonyOutput()) {
+       Remove(target->path());
+       RemoveEdgeFiles(e);
+     }
+@@ -192,7 +186,8 @@ int Cleaner::CleanTargets(int target_count, char* targets[]) {
+     uint64_t slash_bits;
+     string err;
+     if (!CanonicalizePath(&target_name, &slash_bits, &err)) {
+-      Error("failed to canonicalize '%s': %s", target_name.c_str(), err.c_str());
++      Error("failed to canonicalize '%s': %s", target_name.c_str(),
++            err.c_str());
+       status_ = 1;
+     } else {
+       Node* target = state_->LookupNode(target_name);
+diff --git a/src/filebuf.h b/src/filebuf.h
+new file mode 100644
+index 0000000..9587bcc
+--- /dev/null
++++ b/src/filebuf.h
+@@ -0,0 +1,40 @@
++// Copyright 2016 Google Inc. All Rights Reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#ifndef NINJA_FILEBUF_H_
++#define NINJA_FILEBUF_H_
++
++#include <stdio.h>
++
++#include <streambuf>
++
++class ofilebuf : public std::streambuf {
++ public:
++  explicit ofilebuf(FILE* f) : f_(f) {}
++
++ private:
++  int_type overflow(int_type c) override {
++    if (c != traits_type::eof() && fputc(c, f_) == EOF)
++      return traits_type::eof();
++    return c;
++  }
++
++  std::streamsize xsputn(const char* s, std::streamsize count) override {
++    return fwrite(s, 1, count, f_);
++  }
++
++  FILE* f_;
++};
++
++#endif  // NINJA_FILEBUF_H_
+diff --git a/src/frontend.pb.h b/src/frontend.pb.h
+new file mode 100644
+index 0000000..bfca955
+--- /dev/null
++++ b/src/frontend.pb.h
+@@ -0,0 +1,717 @@
++// This file is autogenerated by generate_proto_header.py, do not edit
++
++#ifndef NINJA_FRONTEND_PB_H
++#define NINJA_FRONTEND_PB_H
++
++#include <inttypes.h>
++
++#include <iostream>
++#include <string>
++#include <vector>
++
++#include "proto.h"
++
++namespace ninja {
++struct Status {
++  struct TotalEdges {
++    uint32_t total_edges_;
++    bool has_total_edges_;
++
++    TotalEdges() {
++      has_total_edges_ = false;
++      total_edges_ = static_cast<uint32_t>(0);
++    }
++
++    TotalEdges(const TotalEdges&);
++    void operator=(const TotalEdges&);
++
++    void SerializeToOstream(std::ostream* output__) const {
++      WriteVarint32(output__, 1, total_edges_);
++    }
++
++    size_t ByteSizeLong() const {
++      size_t size = 0;
++      size += VarintSize32(total_edges_) + 1;
++      return size;
++    }
++
++    void Clear() { total_edges_ = static_cast<uint32_t>(0); }
++
++    uint32_t* mutable_total_edges() {
++      has_total_edges_ = true;
++      return &total_edges_;
++    }
++    void set_total_edges(const uint32_t& value) {
++      has_total_edges_ = true;
++      total_edges_ = value;
++    }
++  };
++
++  struct BuildStarted {
++    uint32_t parallelism_;
++    bool has_parallelism_;
++    bool verbose_;
++    bool has_verbose_;
++    uint32_t critical_path_time_;
++    bool has_critical_path_time_;
++    uint32_t estimated_total_time_;
++    bool has_estimated_total_time_;
++
++    BuildStarted() {
++      has_parallelism_ = false;
++      parallelism_ = static_cast<uint32_t>(0);
++      has_verbose_ = false;
++      verbose_ = static_cast<bool>(0);
++      has_critical_path_time_ = false;
++      critical_path_time_ = static_cast<uint32_t>(0);
++      has_estimated_total_time_ = false;
++      estimated_total_time_ = static_cast<uint32_t>(0);
++    }
++
++    BuildStarted(const BuildStarted&);
++    void operator=(const BuildStarted&);
++
++    void SerializeToOstream(std::ostream* output__) const {
++      WriteVarint32(output__, 1, parallelism_);
++      WriteVarint32(output__, 2, verbose_);
++      WriteVarint32(output__, 3, critical_path_time_);
++      WriteVarint32(output__, 4, estimated_total_time_);
++    }
++
++    size_t ByteSizeLong() const {
++      size_t size = 0;
++      size += VarintSize32(parallelism_) + 1;
++      size += VarintSizeBool(verbose_) + 1;
++      size += VarintSize32(critical_path_time_) + 1;
++      size += VarintSize32(estimated_total_time_) + 1;
++      return size;
++    }
++
++    void Clear() {
++      parallelism_ = static_cast<uint32_t>(0);
++      verbose_ = static_cast<bool>(0);
++      critical_path_time_ = static_cast<uint32_t>(0);
++      estimated_total_time_ = static_cast<uint32_t>(0);
++    }
++
++    uint32_t* mutable_parallelism() {
++      has_parallelism_ = true;
++      return &parallelism_;
++    }
++    void set_parallelism(const uint32_t& value) {
++      has_parallelism_ = true;
++      parallelism_ = value;
++    }
++    bool* mutable_verbose() {
++      has_verbose_ = true;
++      return &verbose_;
++    }
++    void set_verbose(const bool& value) {
++      has_verbose_ = true;
++      verbose_ = value;
++    }
++    uint32_t* mutable_critical_path_time() {
++      has_critical_path_time_ = true;
++      return &critical_path_time_;
++    }
++    void set_critical_path_time(const uint32_t& value) {
++      has_critical_path_time_ = true;
++      critical_path_time_ = value;
++    }
++    uint32_t* mutable_estimated_total_time() {
++      has_estimated_total_time_ = true;
++      return &estimated_total_time_;
++    }
++    void set_estimated_total_time(const uint32_t& value) {
++      has_estimated_total_time_ = true;
++      estimated_total_time_ = value;
++    }
++  };
++
++  struct BuildFinished {
++    BuildFinished() {}
++    BuildFinished(const BuildFinished&);
++    void operator=(const BuildFinished&);
++    void SerializeToOstream(std::ostream* output__) const {}
++    size_t ByteSizeLong() const { return 0; }
++    void Clear() {}
++  };
++
++  struct EdgeStarted {
++    uint32_t id_;
++    bool has_id_;
++    uint32_t start_time_;
++    bool has_start_time_;
++    std::vector<std::string> inputs_;
++    bool has_inputs_;
++    std::vector<std::string> outputs_;
++    bool has_outputs_;
++    std::string desc_;
++    bool has_desc_;
++    std::string command_;
++    bool has_command_;
++    bool console_;
++    bool has_console_;
++    std::vector<std::string> changed_inputs_;
++    bool has_changed_inputs_;
++
++    EdgeStarted() {
++      has_id_ = false;
++      id_ = static_cast<uint32_t>(0);
++      has_start_time_ = false;
++      start_time_ = static_cast<uint32_t>(0);
++      has_inputs_ = false;
++      has_outputs_ = false;
++      has_desc_ = false;
++      has_command_ = false;
++      has_console_ = false;
++      console_ = static_cast<bool>(0);
++      has_changed_inputs_ = false;
++    }
++
++    EdgeStarted(const EdgeStarted&);
++    void operator=(const EdgeStarted&);
++
++    void SerializeToOstream(std::ostream* output__) const {
++      WriteVarint32(output__, 1, id_);
++      WriteVarint32(output__, 2, start_time_);
++      for (std::vector<std::string>::const_iterator it_ = inputs_.begin();
++           it_ != inputs_.end(); it_++) {
++        WriteString(output__, 3, *it_);
++      }
++      for (std::vector<std::string>::const_iterator it_ = outputs_.begin();
++           it_ != outputs_.end(); it_++) {
++        WriteString(output__, 4, *it_);
++      }
++      WriteString(output__, 5, desc_);
++      WriteString(output__, 6, command_);
++      WriteVarint32(output__, 7, console_);
++      for (std::vector<std::string>::const_iterator it_ =
++               changed_inputs_.begin();
++           it_ != changed_inputs_.end(); it_++) {
++        WriteString(output__, 8, *it_);
++      }
++    }
++
++    size_t ByteSizeLong() const {
++      size_t size = 0;
++      size += VarintSize32(id_) + 1;
++      size += VarintSize32(start_time_) + 1;
++      for (std::vector<std::string>::const_iterator it_ = inputs_.begin();
++           it_ != inputs_.end(); it_++) {
++        size += StringSize(*it_) + 1;
++      }
++      for (std::vector<std::string>::const_iterator it_ = outputs_.begin();
++           it_ != outputs_.end(); it_++) {
++        size += StringSize(*it_) + 1;
++      }
++      size += StringSize(desc_) + 1;
++      size += StringSize(command_) + 1;
++      size += VarintSizeBool(console_) + 1;
++      for (std::vector<std::string>::const_iterator it_ =
++               changed_inputs_.begin();
++           it_ != changed_inputs_.end(); it_++) {
++        size += StringSize(*it_) + 1;
++      }
++      return size;
++    }
++
++    void Clear() {
++      id_ = static_cast<uint32_t>(0);
++      start_time_ = static_cast<uint32_t>(0);
++      inputs_.clear();
++      outputs_.clear();
++      desc_.clear();
++      command_.clear();
++      console_ = static_cast<bool>(0);
++      changed_inputs_.clear();
++    }
++
++    uint32_t* mutable_id() {
++      has_id_ = true;
++      return &id_;
++    }
++    void set_id(const uint32_t& value) {
++      has_id_ = true;
++      id_ = value;
++    }
++    uint32_t* mutable_start_time() {
++      has_start_time_ = true;
++      return &start_time_;
++    }
++    void set_start_time(const uint32_t& value) {
++      has_start_time_ = true;
++      start_time_ = value;
++    }
++    std::vector<std::string>* mutable_inputs() {
++      has_inputs_ = true;
++      return &inputs_;
++    }
++    void add_inputs(const std::string& value) {
++      has_inputs_ = true;
++      inputs_.push_back(value);
++    }
++    std::vector<std::string>* mutable_outputs() {
++      has_outputs_ = true;
++      return &outputs_;
++    }
++    void add_outputs(const std::string& value) {
++      has_outputs_ = true;
++      outputs_.push_back(value);
++    }
++    std::string* mutable_desc() {
++      has_desc_ = true;
++      return &desc_;
++    }
++    void set_desc(const std::string& value) {
++      has_desc_ = true;
++      desc_ = value;
++    }
++    std::string* mutable_command() {
++      has_command_ = true;
++      return &command_;
++    }
++    void set_command(const std::string& value) {
++      has_command_ = true;
++      command_ = value;
++    }
++    bool* mutable_console() {
++      has_console_ = true;
++      return &console_;
++    }
++    void set_console(const bool& value) {
++      has_console_ = true;
++      console_ = value;
++    }
++    std::vector<std::string>* mutable_changed_inputs() {
++      has_changed_inputs_ = true;
++      return &changed_inputs_;
++    }
++    void add_changed_inputs(const std::string& value) {
++      has_changed_inputs_ = true;
++      changed_inputs_.push_back(value);
++    }
++  };
++
++  struct EdgeFinished {
++    uint32_t id_;
++    bool has_id_;
++    uint32_t end_time_;
++    bool has_end_time_;
++    int32_t status_;
++    bool has_status_;
++    std::string output_;
++    bool has_output_;
++    uint32_t user_time_;
++    bool has_user_time_;
++    uint32_t system_time_;
++    bool has_system_time_;
++    uint64_t max_rss_kb_;
++    bool has_max_rss_kb_;
++    uint64_t minor_page_faults_;
++    bool has_minor_page_faults_;
++    uint64_t major_page_faults_;
++    bool has_major_page_faults_;
++    uint64_t io_input_kb_;
++    bool has_io_input_kb_;
++    uint64_t io_output_kb_;
++    bool has_io_output_kb_;
++    uint64_t voluntary_context_switches_;
++    bool has_voluntary_context_switches_;
++    uint64_t involuntary_context_switches_;
++    bool has_involuntary_context_switches_;
++    std::string tags_;
++    bool has_tags_;
++
++    EdgeFinished() {
++      has_id_ = false;
++      id_ = static_cast<uint32_t>(0);
++      has_end_time_ = false;
++      end_time_ = static_cast<uint32_t>(0);
++      has_status_ = false;
++      status_ = static_cast<int32_t>(0);
++      has_output_ = false;
++      has_user_time_ = false;
++      user_time_ = static_cast<uint32_t>(0);
++      has_system_time_ = false;
++      system_time_ = static_cast<uint32_t>(0);
++      has_max_rss_kb_ = false;
++      max_rss_kb_ = static_cast<uint64_t>(0);
++      has_minor_page_faults_ = false;
++      minor_page_faults_ = static_cast<uint64_t>(0);
++      has_major_page_faults_ = false;
++      major_page_faults_ = static_cast<uint64_t>(0);
++      has_io_input_kb_ = false;
++      io_input_kb_ = static_cast<uint64_t>(0);
++      has_io_output_kb_ = false;
++      io_output_kb_ = static_cast<uint64_t>(0);
++      has_voluntary_context_switches_ = false;
++      voluntary_context_switches_ = static_cast<uint64_t>(0);
++      has_involuntary_context_switches_ = false;
++      involuntary_context_switches_ = static_cast<uint64_t>(0);
++      has_tags_ = false;
++    }
++
++    EdgeFinished(const EdgeFinished&);
++    void operator=(const EdgeFinished&);
++
++    void SerializeToOstream(std::ostream* output__) const {
++      WriteVarint32(output__, 1, id_);
++      WriteVarint32(output__, 2, end_time_);
++      WriteVarint32(output__, 3, ZigZagEncode32(status_));
++      WriteString(output__, 4, output_);
++      WriteVarint32(output__, 5, user_time_);
++      WriteVarint32(output__, 6, system_time_);
++      WriteVarint64(output__, 7, max_rss_kb_);
++      WriteVarint64(output__, 8, minor_page_faults_);
++      WriteVarint64(output__, 9, major_page_faults_);
++      WriteVarint64(output__, 10, io_input_kb_);
++      WriteVarint64(output__, 11, io_output_kb_);
++      WriteVarint64(output__, 12, voluntary_context_switches_);
++      WriteVarint64(output__, 13, involuntary_context_switches_);
++      WriteString(output__, 14, tags_);
++    }
++
++    size_t ByteSizeLong() const {
++      size_t size = 0;
++      size += VarintSize32(id_) + 1;
++      size += VarintSize32(end_time_) + 1;
++      size += VarintSize32(ZigZagEncode32(status_)) + 1;
++      size += StringSize(output_) + 1;
++      size += VarintSize32(user_time_) + 1;
++      size += VarintSize32(system_time_) + 1;
++      size += VarintSize64(max_rss_kb_) + 1;
++      size += VarintSize64(minor_page_faults_) + 1;
++      size += VarintSize64(major_page_faults_) + 1;
++      size += VarintSize64(io_input_kb_) + 1;
++      size += VarintSize64(io_output_kb_) + 1;
++      size += VarintSize64(voluntary_context_switches_) + 1;
++      size += VarintSize64(involuntary_context_switches_) + 1;
++      size += StringSize(tags_) + 1;
++      return size;
++    }
++
++    void Clear() {
++      id_ = static_cast<uint32_t>(0);
++      end_time_ = static_cast<uint32_t>(0);
++      status_ = static_cast<int32_t>(0);
++      output_.clear();
++      user_time_ = static_cast<uint32_t>(0);
++      system_time_ = static_cast<uint32_t>(0);
++      max_rss_kb_ = static_cast<uint64_t>(0);
++      minor_page_faults_ = static_cast<uint64_t>(0);
++      major_page_faults_ = static_cast<uint64_t>(0);
++      io_input_kb_ = static_cast<uint64_t>(0);
++      io_output_kb_ = static_cast<uint64_t>(0);
++      voluntary_context_switches_ = static_cast<uint64_t>(0);
++      involuntary_context_switches_ = static_cast<uint64_t>(0);
++      tags_.clear();
++    }
++
++    uint32_t* mutable_id() {
++      has_id_ = true;
++      return &id_;
++    }
++    void set_id(const uint32_t& value) {
++      has_id_ = true;
++      id_ = value;
++    }
++    uint32_t* mutable_end_time() {
++      has_end_time_ = true;
++      return &end_time_;
++    }
++    void set_end_time(const uint32_t& value) {
++      has_end_time_ = true;
++      end_time_ = value;
++    }
++    int32_t* mutable_status() {
++      has_status_ = true;
++      return &status_;
++    }
++    void set_status(const int32_t& value) {
++      has_status_ = true;
++      status_ = value;
++    }
++    std::string* mutable_output() {
++      has_output_ = true;
++      return &output_;
++    }
++    void set_output(const std::string& value) {
++      has_output_ = true;
++      output_ = value;
++    }
++    uint32_t* mutable_user_time() {
++      has_user_time_ = true;
++      return &user_time_;
++    }
++    void set_user_time(const uint32_t& value) {
++      has_user_time_ = true;
++      user_time_ = value;
++    }
++    uint32_t* mutable_system_time() {
++      has_system_time_ = true;
++      return &system_time_;
++    }
++    void set_system_time(const uint32_t& value) {
++      has_system_time_ = true;
++      system_time_ = value;
++    }
++    uint64_t* mutable_max_rss_kb() {
++      has_max_rss_kb_ = true;
++      return &max_rss_kb_;
++    }
++    void set_max_rss_kb(const uint64_t& value) {
++      has_max_rss_kb_ = true;
++      max_rss_kb_ = value;
++    }
++    uint64_t* mutable_minor_page_faults() {
++      has_minor_page_faults_ = true;
++      return &minor_page_faults_;
++    }
++    void set_minor_page_faults(const uint64_t& value) {
++      has_minor_page_faults_ = true;
++      minor_page_faults_ = value;
++    }
++    uint64_t* mutable_major_page_faults() {
++      has_major_page_faults_ = true;
++      return &major_page_faults_;
++    }
++    void set_major_page_faults(const uint64_t& value) {
++      has_major_page_faults_ = true;
++      major_page_faults_ = value;
++    }
++    uint64_t* mutable_io_input_kb() {
++      has_io_input_kb_ = true;
++      return &io_input_kb_;
++    }
++    void set_io_input_kb(const uint64_t& value) {
++      has_io_input_kb_ = true;
++      io_input_kb_ = value;
++    }
++    uint64_t* mutable_io_output_kb() {
++      has_io_output_kb_ = true;
++      return &io_output_kb_;
++    }
++    void set_io_output_kb(const uint64_t& value) {
++      has_io_output_kb_ = true;
++      io_output_kb_ = value;
++    }
++    uint64_t* mutable_voluntary_context_switches() {
++      has_voluntary_context_switches_ = true;
++      return &voluntary_context_switches_;
++    }
++    void set_voluntary_context_switches(const uint64_t& value) {
++      has_voluntary_context_switches_ = true;
++      voluntary_context_switches_ = value;
++    }
++    uint64_t* mutable_involuntary_context_switches() {
++      has_involuntary_context_switches_ = true;
++      return &involuntary_context_switches_;
++    }
++    void set_involuntary_context_switches(const uint64_t& value) {
++      has_involuntary_context_switches_ = true;
++      involuntary_context_switches_ = value;
++    }
++    std::string* mutable_tags() {
++      has_tags_ = true;
++      return &tags_;
++    }
++    void set_tags(const std::string& value) {
++      has_tags_ = true;
++      tags_ = value;
++    }
++  };
++
++  struct Message {
++    enum Level {
++      INFO = 0,
++      WARNING = 1,
++      ERROR = 2,
++      DEBUG = 3,
++    };
++
++    ::ninja::Status::Message::Level level_;
++    bool has_level_;
++    std::string message_;
++    bool has_message_;
++
++    Message() {
++      has_level_ = false;
++      level_ = static_cast<::ninja::Status::Message::Level>(0);
++      has_message_ = false;
++    }
++
++    Message(const Message&);
++    void operator=(const Message&);
++
++    void SerializeToOstream(std::ostream* output__) const {
++      WriteVarint32SignExtended(output__, 1, static_cast<int32_t>(level_));
++      WriteString(output__, 2, message_);
++    }
++
++    size_t ByteSizeLong() const {
++      size_t size = 0;
++      size += VarintSize32SignExtended(static_cast<int32_t>(level_)) + 1;
++      size += StringSize(message_) + 1;
++      return size;
++    }
++
++    void Clear() {
++      level_ = static_cast<::ninja::Status::Message::Level>(0);
++      message_.clear();
++    }
++
++    ::ninja::Status::Message::Level* mutable_level() {
++      has_level_ = true;
++      return &level_;
++    }
++    void set_level(const ::ninja::Status::Message::Level& value) {
++      has_level_ = true;
++      level_ = value;
++    }
++    std::string* mutable_message() {
++      has_message_ = true;
++      return &message_;
++    }
++    void set_message(const std::string& value) {
++      has_message_ = true;
++      message_ = value;
++    }
++  };
++
++  ::ninja::Status::TotalEdges total_edges_;
++  bool has_total_edges_;
++  ::ninja::Status::BuildStarted build_started_;
++  bool has_build_started_;
++  ::ninja::Status::BuildFinished build_finished_;
++  bool has_build_finished_;
++  ::ninja::Status::EdgeStarted edge_started_;
++  bool has_edge_started_;
++  ::ninja::Status::EdgeFinished edge_finished_;
++  bool has_edge_finished_;
++  ::ninja::Status::Message message_;
++  bool has_message_;
++
++  Status() {
++    has_total_edges_ = false;
++    has_build_started_ = false;
++    has_build_finished_ = false;
++    has_edge_started_ = false;
++    has_edge_finished_ = false;
++    has_message_ = false;
++  }
++
++  Status(const Status&);
++  void operator=(const Status&);
++
++  void SerializeToOstream(std::ostream* output__) const {
++    if (has_total_edges_) {
++      WriteLengthDelimited(output__, 1, total_edges_.ByteSizeLong());
++      total_edges_.SerializeToOstream(output__);
++    }
++    if (has_build_started_) {
++      WriteLengthDelimited(output__, 2, build_started_.ByteSizeLong());
++      build_started_.SerializeToOstream(output__);
++    }
++    if (has_build_finished_) {
++      WriteLengthDelimited(output__, 3, build_finished_.ByteSizeLong());
++      build_finished_.SerializeToOstream(output__);
++    }
++    if (has_edge_started_) {
++      WriteLengthDelimited(output__, 4, edge_started_.ByteSizeLong());
++      edge_started_.SerializeToOstream(output__);
++    }
++    if (has_edge_finished_) {
++      WriteLengthDelimited(output__, 5, edge_finished_.ByteSizeLong());
++      edge_finished_.SerializeToOstream(output__);
++    }
++    if (has_message_) {
++      WriteLengthDelimited(output__, 6, message_.ByteSizeLong());
++      message_.SerializeToOstream(output__);
++    }
++  }
++
++  size_t ByteSizeLong() const {
++    size_t size = 0;
++    if (has_total_edges_) {
++      size += 1 + VarintSize32(total_edges_.ByteSizeLong());
++      size += total_edges_.ByteSizeLong();
++    }
++    if (has_build_started_) {
++      size += 1 + VarintSize32(build_started_.ByteSizeLong());
++      size += build_started_.ByteSizeLong();
++    }
++    if (has_build_finished_) {
++      size += 1 + VarintSize32(build_finished_.ByteSizeLong());
++      size += build_finished_.ByteSizeLong();
++    }
++    if (has_edge_started_) {
++      size += 1 + VarintSize32(edge_started_.ByteSizeLong());
++      size += edge_started_.ByteSizeLong();
++    }
++    if (has_edge_finished_) {
++      size += 1 + VarintSize32(edge_finished_.ByteSizeLong());
++      size += edge_finished_.ByteSizeLong();
++    }
++    if (has_message_) {
++      size += 1 + VarintSize32(message_.ByteSizeLong());
++      size += message_.ByteSizeLong();
++    }
++    return size;
++  }
++
++  void Clear() {
++    if (has_total_edges_) {
++      total_edges_.Clear();
++      has_total_edges_ = false;
++    }
++    if (has_build_started_) {
++      build_started_.Clear();
++      has_build_started_ = false;
++    }
++    if (has_build_finished_) {
++      build_finished_.Clear();
++      has_build_finished_ = false;
++    }
++    if (has_edge_started_) {
++      edge_started_.Clear();
++      has_edge_started_ = false;
++    }
++    if (has_edge_finished_) {
++      edge_finished_.Clear();
++      has_edge_finished_ = false;
++    }
++    if (has_message_) {
++      message_.Clear();
++      has_message_ = false;
++    }
++  }
++
++  ::ninja::Status::TotalEdges* mutable_total_edges() {
++    has_total_edges_ = true;
++    return &total_edges_;
++  }
++  ::ninja::Status::BuildStarted* mutable_build_started() {
++    has_build_started_ = true;
++    return &build_started_;
++  }
++  ::ninja::Status::BuildFinished* mutable_build_finished() {
++    has_build_finished_ = true;
++    return &build_finished_;
++  }
++  ::ninja::Status::EdgeStarted* mutable_edge_started() {
++    has_edge_started_ = true;
++    return &edge_started_;
++  }
++  ::ninja::Status::EdgeFinished* mutable_edge_finished() {
++    has_edge_finished_ = true;
++    return &edge_finished_;
++  }
++  ::ninja::Status::Message* mutable_message() {
++    has_message_ = true;
++    return &message_;
++  }
++};
++
++}  // namespace ninja
++#endif  // NINJA_FRONTEND_PB_H
+diff --git a/src/graph.cc b/src/graph.cc
+index 28a9653..b86f9ac 100644
+--- a/src/graph.cc
++++ b/src/graph.cc
+@@ -14,10 +14,11 @@
+ 
+ #include "graph.h"
+ 
+-#include <algorithm>
+ #include <assert.h>
+ #include <stdio.h>
+ 
++#include <algorithm>
++
+ #include "build_log.h"
+ #include "debug_flags.h"
+ #include "depfile_parser.h"
+@@ -66,10 +67,22 @@ bool DependencyScan::RecomputeDirty(Node* node, vector<Node*>* stack,
+   stack->push_back(node);
+ 
+   bool dirty = false;
++  bool phony_output = edge->IsPhonyOutput();
+   edge->outputs_ready_ = true;
+   edge->deps_missing_ = false;
+ 
+-  if (!edge->deps_loaded_) {
++  if (phony_output) {
++    EXPLAIN("edge with output %s is a phony output, so is always dirty",
++            node->path().c_str());
++    dirty = true;
++    if (edge->GetBindingBool("deps") || edge->GetBindingBool("depfile")) {
++      *err = "phony output " + node->path() +
++             " has deps, which does not make sense.";
++      return false;
++    }
++  }
++
++  if (!phony_output && !edge->deps_loaded_) {
+     // This is our first encounter with this edge.
+     // If there is a pending dyndep file, visit it now:
+     // * If the dyndep file is ready then load it now to get any
+@@ -101,7 +114,7 @@ bool DependencyScan::RecomputeDirty(Node* node, vector<Node*>* stack,
+       return false;
+   }
+ 
+-  if (!edge->deps_loaded_) {
++  if (!phony_output && !edge->deps_loaded_) {
+     // This is our first encounter with this edge.  Load discovered deps.
+     edge->deps_loaded_ = true;
+     if (!dep_loader_.LoadDeps(edge, err)) {
+@@ -128,6 +141,16 @@ bool DependencyScan::RecomputeDirty(Node* node, vector<Node*>* stack,
+     }
+ 
+     if (!edge->is_order_only(i - edge->inputs_.begin())) {
++      if (!phony_output) {
++        if (Edge* in_edge = (*i)->in_edge()) {
++          if (in_edge->IsPhonyOutput()) {
++            *err = "real file '" + node->path() +
++                   "' depends on phony output '" + (*i)->path() + "'";
++            return false;
++          }
++        }
++      }
++
+       // If a regular input is dirty (or missing), we're dirty.
+       // Otherwise consider mtime.
+       if ((*i)->dirty()) {
+@@ -212,9 +235,21 @@ bool DependencyScan::VerifyDAG(Node* node, vector<Node*>* stack, string* err) {
+ 
+ bool DependencyScan::RecomputeOutputsDirty(Edge* edge, Node* most_recent_input,
+                                            bool* outputs_dirty, string* err) {
++  if (edge->IsPhonyOutput())
++    return true;
+   string command = edge->EvaluateCommand(/*incl_rsp_file=*/true);
+   for (vector<Node*>::iterator o = edge->outputs_.begin();
+        o != edge->outputs_.end(); ++o) {
++    if (edge->is_phony()) {
++      if (edge->inputs_.empty() && !(*o)->exists()) {
++        *err = "output " + (*o)->path() +
++               " of phony edge doesn't exist. Missing 'phony_output = true'?";
++        return false;
++      }
++
++      continue;
++    }
++
+     if (RecomputeOutputDirty(edge, most_recent_input, command, *o)) {
+       *outputs_dirty = true;
+       return true;
+@@ -225,8 +260,9 @@ bool DependencyScan::RecomputeOutputsDirty(Edge* edge, Node* most_recent_input,
+ 
+ bool DependencyScan::RecomputeOutputDirty(const Edge* edge,
+                                           const Node* most_recent_input,
+-                                          const string& command,
+-                                          Node* output) {
++                                          const string& command, Node* output) {
++  if (edge->IsPhonyOutput())
++    return false;
+   if (edge->is_phony()) {
+     // Phony edges don't write any output.  Outputs are only dirty if
+     // there are no inputs and we're missing the output.
+@@ -262,11 +298,12 @@ bool DependencyScan::RecomputeOutputDirty(const Edge* edge,
+     }
+ 
+     if (output_mtime < most_recent_input->mtime()) {
+-      EXPLAIN("%soutput %s older than most recent input %s "
+-              "(%" PRId64 " vs %" PRId64 ")",
+-              used_restat ? "restat of " : "", output->path().c_str(),
+-              most_recent_input->path().c_str(),
+-              output_mtime, most_recent_input->mtime());
++      EXPLAIN(
++          "%soutput %s older than most recent input %s "
++          "(%" PRId64 " vs %" PRId64 ")",
++          used_restat ? "restat of " : "", output->path().c_str(),
++          most_recent_input->path().c_str(), output_mtime,
++          most_recent_input->mtime());
+       return true;
+     }
+   }
+@@ -277,8 +314,8 @@ bool DependencyScan::RecomputeOutputDirty(const Edge* edge,
+       if (!generator &&
+           BuildLog::LogEntry::HashCommand(command) != entry->command_hash) {
+         // May also be dirty due to the command changing since the last build.
+-        // But if this is a generator rule, the command changing does not make us
+-        // dirty.
++        // But if this is a generator rule, the command changing does not make
++        // us dirty.
+         EXPLAIN("command line changed for %s", output->path().c_str());
+         return true;
+       }
+@@ -287,7 +324,8 @@ bool DependencyScan::RecomputeOutputDirty(const Edge* edge,
+         // mtime of the most recent input.  This can occur even when the mtime
+         // on disk is newer if a previous run wrote to the output file but
+         // exited with an error or was interrupted.
+-        EXPLAIN("recorded mtime of %s older than most recent input %s (%" PRId64 " vs %" PRId64 ")",
++        EXPLAIN("recorded mtime of %s older than most recent input %s (%" PRId64
++                " vs %" PRId64 ")",
+                 output->path().c_str(), most_recent_input->path().c_str(),
+                 entry->mtime, most_recent_input->mtime());
+         return true;
+@@ -312,8 +350,8 @@ bool DependencyScan::LoadDyndeps(Node* node, DyndepFile* ddf,
  }
  
- TEST_F(ParserTest, MultipleOutputsWithDeps) {
-+  // Multiple outputs with depslog is now supported (Ninja 1.10+ feature).
-   State local_state;
-   ManifestParser parser(&local_state, NULL);
+ bool Edge::AllInputsReady() const {
+-  for (vector<Node*>::const_iterator i = inputs_.begin();
+-       i != inputs_.end(); ++i) {
++  for (vector<Node*>::const_iterator i = inputs_.begin(); i != inputs_.end();
++       ++i) {
+     if ((*i)->in_edge() && !(*i)->in_edge()->outputs_ready())
+       return false;
+   }
+@@ -330,7 +368,8 @@ struct EdgeEnv : public Env {
+ 
+   /// Given a span of Nodes, construct a list of paths suitable for a command
+   /// line.
+-  std::string MakePathList(const Node* const* span, size_t size, char sep) const;
++  std::string MakePathList(const Node* const* span, size_t size,
++                           char sep) const;
+ 
+  private:
+   vector<string> lookups_;
+@@ -341,8 +380,8 @@ struct EdgeEnv : public Env {
+ 
+ string EdgeEnv::LookupVariable(const string& var) {
+   if (var == "in" || var == "in_newline") {
+-    int explicit_deps_count = edge_->inputs_.size() - edge_->implicit_deps_ -
+-      edge_->order_only_deps_;
++    int explicit_deps_count =
++        edge_->inputs_.size() - edge_->implicit_deps_ - edge_->order_only_deps_;
+ #if __cplusplus >= 201103L
+     return MakePathList(edge_->inputs_.data(), explicit_deps_count,
+ #else
+@@ -464,7 +503,7 @@ bool Edge::maybe_phonycycle_diagnostic() const {
+   // of the form "build a: phony ... a ...".   Restrict our
+   // "phonycycle" diagnostic option to the form it used.
+   return is_phony() && outputs_.size() == 1 && implicit_outs_ == 0 &&
+-      implicit_deps_ == 0;
++         implicit_deps_ == 0;
+ }
+ 
+ // static
+@@ -483,9 +522,8 @@ string Node::PathDecanonicalized(const string& path, uint64_t slash_bits) {
+ }
+ 
+ void Node::Dump(const char* prefix) const {
+-  printf("%s <%s 0x%p> mtime: %" PRId64 "%s, (:%s), ",
+-         prefix, path().c_str(), this,
+-         mtime(), mtime() ? "" : " (:missing)",
++  printf("%s <%s 0x%p> mtime: %" PRId64 "%s, (:%s), ", prefix, path().c_str(),
++         this, mtime(), mtime() ? "" : " (:missing)",
+          dirty() ? " dirty" : " clean");
+   if (in_edge()) {
+     in_edge()->Dump("in-edge: ");
+@@ -544,9 +582,8 @@ bool ImplicitDepLoader::LoadDepFile(Edge* edge, const string& path,
+     return false;
+   }
+ 
+-  DepfileParser depfile(depfile_parser_options_
+-                        ? *depfile_parser_options_
+-                        : DepfileParserOptions());
++  DepfileParser depfile(depfile_parser_options_ ? *depfile_parser_options_
++                                                : DepfileParserOptions());
+   string depfile_err;
+   if (!depfile.Parse(&content, &depfile_err)) {
+     *err = path + ": " + depfile_err;
+@@ -580,8 +617,10 @@ bool ImplicitDepLoader::LoadDepFile(Edge* edge, const string& path,
+   for (std::vector<StringPiece>::iterator o = depfile.outs_.begin();
+        o != depfile.outs_.end(); ++o) {
+     matches m(o);
+-    if (std::find_if(edge->outputs_.begin(), edge->outputs_.end(), m) == edge->outputs_.end()) {
+-      *err = path + ": depfile mentions '" + o->AsString() + "' as an output, but no such output was declared";
++    if (std::find_if(edge->outputs_.begin(), edge->outputs_.end(), m) ==
++        edge->outputs_.end()) {
++      *err = path + ": depfile mentions '" + o->AsString() +
++             "' as an output, but no such output was declared";
+       return false;
+     }
+   }
+@@ -618,7 +657,8 @@ bool ImplicitDepLoader::LoadDepsFromLog(Edge* edge, string* err) {
+ 
+   // Deps are invalid if the output is newer than the deps.
+   if (output->mtime() > deps->mtime) {
+-    EXPLAIN("stored deps info out of date for '%s' (%" PRId64 " vs %" PRId64 ")",
++    EXPLAIN("stored deps info out of date for '%s' (%" PRId64 " vs %" PRId64
++            ")",
+             output->path().c_str(), deps->mtime, output->mtime());
+     return false;
+   }
+diff --git a/src/graph.h b/src/graph.h
+index 2fa54af..c6ab6c1 100644
+--- a/src/graph.h
++++ b/src/graph.h
+@@ -33,17 +33,18 @@ struct Node;
+ struct Pool;
+ struct State;
+ 
++struct EdgeCommand {
++  std::string command;
++  bool use_console = false;
++  char** env = NULL;
++};
++
+ /// Information about a node in the dependency graph: the file, whether
+ /// it's dirty, mtime, etc.
+ struct Node {
+   Node(const string& path, uint64_t slash_bits)
+-      : path_(path),
+-        slash_bits_(slash_bits),
+-        mtime_(-1),
+-        dirty_(false),
+-        dyndep_pending_(false),
+-        in_edge_(NULL),
+-        id_(-1) {}
++      : path_(path), slash_bits_(slash_bits), mtime_(-1), dirty_(false),
++        dyndep_pending_(false), in_edge_(NULL), id_(-1) {}
+ 
+   /// Return false on error.
+   bool Stat(DiskInterface* disk_interface, string* err);
+@@ -62,25 +63,18 @@ struct Node {
+   }
+ 
+   /// Mark the Node as already-stat()ed and missing.
+-  void MarkMissing() {
+-    mtime_ = 0;
+-  }
++  void MarkMissing() { mtime_ = 0; }
+ 
+-  bool exists() const {
+-    return mtime_ != 0;
+-  }
++  bool exists() const { return mtime_ != 0; }
+ 
+-  bool status_known() const {
+-    return mtime_ != -1;
+-  }
++  bool status_known() const { return mtime_ != -1; }
+ 
+   const string& path() const { return path_; }
+   /// Get |path()| but use slash_bits to convert back to original slash styles.
+   string PathDecanonicalized() const {
+     return PathDecanonicalized(path_, slash_bits_);
+   }
+-  static string PathDecanonicalized(const string& path,
+-                                    uint64_t slash_bits);
++  static string PathDecanonicalized(const string& path, uint64_t slash_bits);
+   uint64_t slash_bits() const { return slash_bits_; }
+ 
+   TimeStamp mtime() const { return mtime_; }
+@@ -101,9 +95,9 @@ struct Node {
+   const vector<Edge*>& out_edges() const { return out_edges_; }
+   void AddOutEdge(Edge* edge) { out_edges_.push_back(edge); }
+ 
+-  void Dump(const char* prefix="") const;
++  void Dump(const char* prefix = "") const;
+ 
+-private:
++ private:
+   string path_;
+ 
+   /// Set bits starting from lowest for backslashes that were normalized to
+@@ -138,16 +132,12 @@ private:
+ 
+ /// An edge in the dependency graph; links between Nodes using Rules.
+ struct Edge {
+-  enum VisitMark {
+-    VisitNone,
+-    VisitInStack,
+-    VisitDone
+-  };
++  enum VisitMark { VisitNone, VisitInStack, VisitDone };
+ 
+-  Edge() : rule_(NULL), pool_(NULL), dyndep_(NULL), env_(NULL),
+-           mark_(VisitNone), outputs_ready_(false), deps_loaded_(false),
+-           deps_missing_(false), implicit_deps_(0), order_only_deps_(0),
+-           implicit_outs_(0) {}
++  Edge()
++      : rule_(NULL), pool_(NULL), dyndep_(NULL), env_(NULL), mark_(VisitNone),
++        outputs_ready_(false), deps_loaded_(false), deps_missing_(false),
++        implicit_deps_(0), order_only_deps_(0), implicit_outs_(0) {}
+ 
+   /// Return true if all inputs' in-edges are ready.
+   bool AllInputsReady() const;
+@@ -168,7 +158,7 @@ struct Edge {
+   /// Like GetBinding("rspfile"), but without shell escaping.
+   std::string GetUnescapedRspfile() const;
+ 
+-  void Dump(const char* prefix="") const;
++  void Dump(const char* prefix = "") const;
+ 
+   const Rule* rule_;
+   Pool* pool_;
+@@ -180,11 +170,13 @@ struct Edge {
+   bool outputs_ready_;
+   bool deps_loaded_;
+   bool deps_missing_;
++  size_t id_;
+ 
+   const Rule& rule() const { return *rule_; }
+   Pool* pool() const { return pool_; }
+   int weight() const { return 1; }
+   bool outputs_ready() const { return outputs_ready_; }
++  size_t id() const { return id_; }
+ 
+   // There are three types of inputs.
+   // 1) explicit deps, which show up as $in on the command line;
+@@ -198,7 +190,7 @@ struct Edge {
+   int order_only_deps_;
+   bool is_implicit(size_t index) {
+     return index >= inputs_.size() - order_only_deps_ - implicit_deps_ &&
+-        !is_order_only(index);
++           !is_order_only(index);
+   }
+   bool is_order_only(size_t index) {
+     return index >= inputs_.size() - order_only_deps_;
+@@ -216,10 +208,10 @@ struct Edge {
+ 
+   bool is_phony() const;
+   bool use_console() const;
++  bool IsPhonyOutput() const { return GetBindingBool("phony_output"); }
+   bool maybe_phonycycle_diagnostic() const;
+ };
+ 
+-
+ /// ImplicitDepLoader loads implicit dependencies, as referenced via the
+ /// "depfile" attribute in build files.
+ struct ImplicitDepLoader {
+@@ -234,9 +226,7 @@ struct ImplicitDepLoader {
+   //                          or out of date).
+   bool LoadDeps(Edge* edge, string* err);
+ 
+-  DepsLog* deps_log() const {
+-    return deps_log_;
+-  }
++  DepsLog* deps_log() const { return deps_log_; }
+ 
+  private:
+   /// Load implicit dependencies for \a edge from a depfile attribute.
+@@ -262,15 +252,13 @@ struct ImplicitDepLoader {
+   DepfileParserOptions const* depfile_parser_options_;
+ };
+ 
+-
+ /// DependencyScan manages the process of scanning the files in a graph
+ /// and updating the dirty/outputs_ready state of all the nodes and edges.
+ struct DependencyScan {
+   DependencyScan(State* state, BuildLog* build_log, DepsLog* deps_log,
+                  DiskInterface* disk_interface,
+                  DepfileParserOptions const* depfile_parser_options)
+-      : build_log_(build_log),
+-        disk_interface_(disk_interface),
++      : build_log_(build_log), disk_interface_(disk_interface),
+         dep_loader_(state, deps_log, disk_interface, depfile_parser_options),
+         dyndep_loader_(state, disk_interface) {}
+ 
+@@ -283,19 +271,13 @@ struct DependencyScan {
+ 
+   /// Recompute whether any output of the edge is dirty, if so sets |*dirty|.
+   /// Returns false on failure.
+-  bool RecomputeOutputsDirty(Edge* edge, Node* most_recent_input,
+-                             bool* dirty, string* err);
++  bool RecomputeOutputsDirty(Edge* edge, Node* most_recent_input, bool* dirty,
++                             string* err);
+ 
+-  BuildLog* build_log() const {
+-    return build_log_;
+-  }
+-  void set_build_log(BuildLog* log) {
+-    build_log_ = log;
+-  }
++  BuildLog* build_log() const { return build_log_; }
++  void set_build_log(BuildLog* log) { build_log_ = log; }
+ 
+-  DepsLog* deps_log() const {
+-    return dep_loader_.deps_log();
+-  }
++  DepsLog* deps_log() const { return dep_loader_.deps_log(); }
+ 
+   /// Load a dyndep file from the given node's path and update the
+   /// build graph with the new information.  One overload accepts
+diff --git a/src/ninja.cc b/src/ninja.cc
+index 1429639..98a3ceb 100644
+--- a/src/ninja.cc
++++ b/src/ninja.cc
+@@ -17,15 +17,18 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++
+ #include <cstdlib>
+ 
+ #ifdef _WIN32
+-#include "getopt.h"
+ #include <direct.h>
+ #include <windows.h>
+-#elif defined(_AIX)
++
+ #include "getopt.h"
++#elif defined(_AIX)
+ #include <unistd.h>
++
++#include "getopt.h"
+ #else
+ #include <getopt.h>
+ #include <unistd.h>
+@@ -34,15 +37,16 @@
+ #include "browse.h"
+ #include "build.h"
+ #include "build_log.h"
+-#include "deps_log.h"
+ #include "clean.h"
+ #include "debug_flags.h"
++#include "deps_log.h"
+ #include "disk_interface.h"
+ #include "graph.h"
+ #include "graphviz.h"
+ #include "manifest_parser.h"
+ #include "metrics.h"
+ #include "state.h"
++#include "status.h"
+ #include "util.h"
+ #include "version.h"
+ 
+@@ -74,13 +78,57 @@ struct Options {
+ 
+   /// Whether phony cycles should warn or print an error.
+   bool phony_cycle_should_err;
++
++  bool persistent;
+ };
+ 
++bool OptionEnable(const string& name, Options* options, BuildConfig* config) {
++  (void)options;
++  if (name == "list") {
++    printf(
++        "option flags:\n"
++        "  usesphonyoutputs={yes,no}  whether generated manifests use phony "
++        "outputs\n"
++        "  preremoveoutputs={yes,no}  whether to remove outputs before running "
++        "rule\n"
++        "  usesninjalogasweightlist={yes,no}  reserved for ninja_mod "
++        "compatibility\n");
++    return false;
++  }
++  if (name == "usesphonyoutputs=yes") {
++    config->uses_phony_outputs = true;
++    return true;
++  }
++  if (name == "usesphonyoutputs=no") {
++    config->uses_phony_outputs = false;
++    return true;
++  }
++  if (name == "preremoveoutputs=yes") {
++    config->pre_remove_output_files = true;
++    return true;
++  }
++  if (name == "preremoveoutputs=no") {
++    config->pre_remove_output_files = false;
++    return true;
++  }
++  if (name == "usesninjalogasweightlist=yes") {
++    config->ninja_log_as_weight_list = true;
++    return true;
++  }
++  if (name == "usesninjalogasweightlist=no") {
++    config->ninja_log_as_weight_list = false;
++    return true;
++  }
++
++  Error("unknown option flag '%s'", name.c_str());
++  return false;
++}
++
+ /// The Ninja main() loads up a series of data structures; various tools need
+ /// to poke into these, so store them as fields on an object.
+ struct NinjaMain : public BuildLogUser {
+-  NinjaMain(const char* ninja_command, const BuildConfig& config) :
+-      ninja_command_(ninja_command), config_(config) {}
++  NinjaMain(const char* ninja_command, const BuildConfig& config)
++      : ninja_command_(ninja_command), config_(config) {}
+ 
+   /// Command line used to run Ninja.
+   const char* ninja_command_;
+@@ -108,8 +156,8 @@ struct NinjaMain : public BuildLogUser {
+   Node* CollectTarget(const char* cpath, string* err);
+ 
+   /// CollectTarget for all command-line arguments, filling in \a targets.
+-  bool CollectTargetsFromArgs(int argc, char* argv[],
+-                              vector<Node*>* targets, string* err);
++  bool CollectTargetsFromArgs(int argc, char* argv[], vector<Node*>* targets,
++                              string* err);
+ 
+   // The various subcommands, run via "-t XXX".
+   int ToolGraph(const Options* options, int argc, char* argv[]);
+@@ -146,7 +194,7 @@ struct NinjaMain : public BuildLogUser {
+ 
+   /// Build the targets listed on the command line.
+   /// @return an exit code.
+-  int RunBuild(int argc, char** argv);
++  int RunBuild(int argc, char** argv, Status* status);
+ 
+   /// Dump the output requested by '-d stats'.
+   void DumpMetrics();
+@@ -158,12 +206,12 @@ struct NinjaMain : public BuildLogUser {
+     // Just checking n isn't enough: If an old output is both in the build log
+     // and in the deps log, it will have a Node object in state_.  (It will also
+     // have an in edge if one of its inputs is another output that's in the deps
+-    // log, but having a deps edge product an output that's input to another deps
+-    // edge is rare, and the first recompaction will delete all old outputs from
+-    // the deps log, and then a second recompaction will clear the build log,
+-    // which seems good enough for this corner case.)
+-    // Do keep entries around for files which still exist on disk, for
+-    // generators that want to use this information.
++    // log, but having a deps edge product an output that's input to another
++    // deps edge is rare, and the first recompaction will delete all old outputs
++    // from the deps log, and then a second recompaction will clear the build
++    // log, which seems good enough for this corner case.) Do keep entries
++    // around for files which still exist on disk, for generators that want to
++    // use this information.
+     string err;
+     TimeStamp mtime = disk_interface_.Stat(s.AsString(), &err);
+     if (mtime == -1)
+@@ -199,28 +247,41 @@ struct Tool {
+ 
+ /// Print usage information.
+ void Usage(const BuildConfig& config) {
+-  fprintf(stderr,
+-"usage: ninja [options] [targets...]\n"
+-"\n"
+-"if targets are unspecified, builds the 'default' target (see manual).\n"
+-"\n"
+-"options:\n"
+-"  --version      print ninja version (\"%s\")\n"
+-"  -v, --verbose  show all command lines while building\n"
+-"\n"
+-"  -C DIR   change to DIR before doing anything else\n"
+-"  -f FILE  specify input build file [default=build.ninja]\n"
+-"\n"
+-"  -j N     run N jobs in parallel (0 means infinity) [default=%d on this system]\n"
+-"  -k N     keep going until N jobs fail (0 means infinity) [default=1]\n"
+-"  -l N     do not start new jobs if the load average is greater than N\n"
+-"  -n       dry run (don't run commands but act like they succeeded)\n"
+-"\n"
+-"  -d MODE  enable debugging (use '-d list' to list modes)\n"
+-"  -t TOOL  run a subtool (use '-t list' to list subtools)\n"
+-"    terminates toplevel options; further flags are passed to the tool\n"
+-"  -w FLAG  adjust warnings (use '-w list' to list warnings)\n",
+-          kNinjaVersion, config.parallelism);
++  fprintf(
++      stderr,
++      "usage: ninja [options] [targets...]\n"
++      "\n"
++      "if targets are unspecified, builds the 'default' target (see manual).\n"
++      "\n"
++      "options:\n"
++      "  --version      print ninja version (\"%s\")\n"
++      "  -v, --verbose  show all command lines while building\n"
++      "\n"
++      "  -C DIR   change to DIR before doing anything else\n"
++      "  -f FILE  specify input build file [default=build.ninja]\n"
++      "\n"
++      "  -j N     run N jobs in parallel (0 means infinity) [default=%d on "
++      "this system]\n"
++      "  -k N     keep going until N jobs fail (0 means infinity) [default=1]\n"
++      "  -l N     do not start new jobs if the load average is greater than N\n"
++      "  -n       dry run (don't run commands but act like they succeeded)\n"
++      "\n"
++      "  -d MODE  enable debugging (use '-d list' to list modes)\n"
++      "  -t TOOL  run a subtool (use '-t list' to list subtools)\n"
++      "    terminates toplevel options; further flags are passed to the tool\n"
++      "  -w FLAG  adjust warnings (use '-w list' to list warnings)\n"
++      "  -o FLAG  adjust compatibility options (use '-o list' to list "
++      "options)\n"
++      "  --quiet  suppress status updates while keeping command output\n"
++      "  -p       persistent mode; rebuild again after stdin input\n"
++#ifndef _WIN32
++      "\n"
++      "  --frontend COMMAND    execute COMMAND and pass serialized build "
++      "output to it\n"
++      "  --frontend_file FILE  write serialized build output to FILE\n"
++#endif
++      ,
++      kNinjaVersion, config.parallelism);
+ }
+ 
+ /// Choose a default value for the -j (parallelism) flag.
+@@ -247,7 +308,9 @@ bool NinjaMain::RebuildManifest(const char* input_file, string* err) {
+   if (!node)
+     return false;
+ 
+-  Builder builder(&state_, config_, &build_log_, &deps_log_, &disk_interface_);
++  StatusPrinter status(config_);
++  Builder builder(&state_, config_, &build_log_, &deps_log_, &disk_interface_,
++                  &status, GetTimeMillis());
+   if (!builder.AddTarget(node, err))
+     return false;
+ 
+@@ -416,9 +479,7 @@ int NinjaMain::ToolMSVC(const Options* options, int argc, char* argv[]) {
+ #endif
+ 
+ int ToolTargetsList(const vector<Node*>& nodes, int depth, int indent) {
+-  for (vector<Node*>::const_iterator n = nodes.begin();
+-       n != nodes.end();
+-       ++n) {
++  for (vector<Node*>::const_iterator n = nodes.begin(); n != nodes.end(); ++n) {
+     for (int i = 0; i < indent; ++i)
+       printf("  ");
+     const char* target = (*n)->path().c_str();
+@@ -460,8 +521,7 @@ int ToolTargetsList(State* state, const string& rule_name) {
+   }
+ 
+   // Print them.
+-  for (set<string>::const_iterator i = rules.begin();
+-       i != rules.end(); ++i) {
++  for (set<string>::const_iterator i = rules.begin(); i != rules.end(); ++i) {
+     printf("%s\n", (*i).c_str());
+   }
+ 
+@@ -473,8 +533,7 @@ int ToolTargetsList(State* state) {
+        e != state->edges_.end(); ++e) {
+     for (vector<Node*>::iterator out_node = (*e)->outputs_.begin();
+          out_node != (*e)->outputs_.end(); ++out_node) {
+-      printf("%s: %s\n",
+-             (*out_node)->path().c_str(),
++      printf("%s: %s\n", (*out_node)->path().c_str(),
+              (*e)->rule_->name().c_str());
+     }
+   }
+@@ -498,8 +557,8 @@ int NinjaMain::ToolDeps(const Options* options, int argc, char** argv) {
+   }
+ 
+   RealDiskInterface disk_interface;
+-  for (vector<Node*>::iterator it = nodes.begin(), end = nodes.end();
+-       it != end; ++it) {
++  for (vector<Node*>::iterator it = nodes.begin(), end = nodes.end(); it != end;
++       ++it) {
+     DepsLog::Deps* deps = deps_log_.GetDeps(*it);
+     if (!deps) {
+       printf("%s: deps not found\n", (*it)->path().c_str());
+@@ -510,9 +569,9 @@ int NinjaMain::ToolDeps(const Options* options, int argc, char** argv) {
+     TimeStamp mtime = disk_interface.Stat((*it)->path(), &err);
+     if (mtime == -1)
+       Error("%s", err.c_str());  // Log and ignore Stat() errors;
+-    printf("%s: #deps %d, deps mtime %" PRId64 " (%s)\n",
+-           (*it)->path().c_str(), deps->node_count, deps->mtime,
+-           (!mtime || mtime > deps->mtime ? "STALE":"VALID"));
++    printf("%s: #deps %d, deps mtime %" PRId64 " (%s)\n", (*it)->path().c_str(),
++           deps->node_count, deps->mtime,
++           (!mtime || mtime > deps->mtime ? "STALE" : "VALID"));
+     for (int i = 0; i < deps->node_count; ++i)
+       printf("    %s\n", deps->nodes[i]->path().c_str());
+     printf("\n");
+@@ -542,8 +601,8 @@ int NinjaMain::ToolTargets(const Options* options, int argc, char* argv[]) {
+       const char* suggestion =
+           SpellcheckString(mode.c_str(), "rule", "depth", "all", NULL);
+       if (suggestion) {
+-        Error("unknown target tool mode '%s', did you mean '%s'?",
+-              mode.c_str(), suggestion);
++        Error("unknown target tool mode '%s', did you mean '%s'?", mode.c_str(),
++              suggestion);
+       } else {
+         Error("unknown target tool mode '%s'", mode.c_str());
+       }
+@@ -580,13 +639,13 @@ int NinjaMain::ToolRules(const Options* options, int argc, char* argv[]) {
+       break;
+     case 'h':
+     default:
+-      printf("usage: ninja -t rules [options]\n"
+-             "\n"
+-             "options:\n"
+-             "  -d     also print the description of the rule\n"
+-             "  -h     print this message\n"
+-             );
+-    return 1;
++      printf(
++          "usage: ninja -t rules [options]\n"
++          "\n"
++          "options:\n"
++          "  -d     also print the description of the rule\n"
++          "  -h     print this message\n");
++      return 1;
+     }
+   }
+   argv += optind;
+@@ -644,12 +703,13 @@ int NinjaMain::ToolCommands(const Options* options, int argc, char* argv[]) {
+       break;
+     case 'h':
+     default:
+-      printf("usage: ninja -t commands [options] [targets]\n"
+-"\n"
+-"options:\n"
+-"  -s     only print the final command to build [target], not the whole chain\n"
+-             );
+-    return 1;
++      printf(
++          "usage: ninja -t commands [options] [targets]\n"
++          "\n"
++          "options:\n"
++          "  -s     only print the final command to build [target], not the "
++          "whole chain\n");
++      return 1;
+     }
+   }
+   argv += optind;
+@@ -690,13 +750,13 @@ int NinjaMain::ToolClean(const Options* options, int argc, char* argv[]) {
+       break;
+     case 'h':
+     default:
+-      printf("usage: ninja -t clean [options] [targets]\n"
+-"\n"
+-"options:\n"
+-"  -g     also clean files marked as ninja generator output\n"
+-"  -r     interpret targets as a list of rules to clean instead\n"
+-             );
+-    return 1;
++      printf(
++          "usage: ninja -t clean [options] [targets]\n"
++          "\n"
++          "options:\n"
++          "  -g     also clean files marked as ninja generator output\n"
++          "  -r     interpret targets as a list of rules to clean instead\n");
++      return 1;
+     }
+   }
+   argv += optind;
+@@ -723,7 +783,7 @@ int NinjaMain::ToolCleanDead(const Options* options, int argc, char* argv[]) {
+   return cleaner.CleanDead(build_log_.entries());
+ }
+ 
+-void EncodeJSONString(const char *str) {
++void EncodeJSONString(const char* str) {
+   while (*str) {
+     if (*str == '"' || *str == '\\')
+       putchar('\\');
+@@ -732,10 +792,7 @@ void EncodeJSONString(const char *str) {
+   }
+ }
+ 
+-enum EvaluateCommandMode {
+-  ECM_NORMAL,
+-  ECM_EXPAND_RSPFILE
+-};
++enum EvaluateCommandMode { ECM_NORMAL, ECM_EXPAND_RSPFILE };
+ std::string EvaluateCommandWithRspfile(const Edge* edge,
+                                        const EvaluateCommandMode mode) {
+   string command = edge->EvaluateCommand();
+@@ -786,20 +843,19 @@ int NinjaMain::ToolCompilationDatabase(const Options* options, int argc,
+   optind = 1;
+   int opt;
+   while ((opt = getopt(argc, argv, const_cast<char*>("hx"))) != -1) {
+-    switch(opt) {
+-      case 'x':
+-        eval_mode = ECM_EXPAND_RSPFILE;
+-        break;
+-
+-      case 'h':
+-      default:
+-        printf(
+-            "usage: ninja -t compdb [options] [rules]\n"
+-            "\n"
+-            "options:\n"
+-            "  -x     expand @rspfile style response file invocations\n"
+-            );
+-        return 1;
++    switch (opt) {
++    case 'x':
++      eval_mode = ECM_EXPAND_RSPFILE;
++      break;
++
++    case 'h':
++    default:
++      printf(
++          "usage: ninja -t compdb [options] [rules]\n"
++          "\n"
++          "options:\n"
++          "  -x     expand @rspfile style response file invocations\n");
++      return 1;
+     }
+   }
+   argv += optind;
+@@ -919,20 +975,20 @@ int NinjaMain::ToolRestat(const Options* options, int argc, char* argv[]) {
+ int NinjaMain::ToolUrtle(const Options* options, int argc, char** argv) {
+   // RLE encoded.
+   const char* urtle =
+-" 13 ,3;2!2;\n8 ,;<11!;\n5 `'<10!(2`'2!\n11 ,6;, `\\. `\\9 .,c13$ec,.\n6 "
+-",2;11!>; `. ,;!2> .e8$2\".2 \"?7$e.\n <:<8!'` 2.3,.2` ,3!' ;,(?7\";2!2'<"
+-"; `?6$PF ,;,\n2 `'4!8;<!3'`2 3! ;,`'2`2'3!;4!`2.`!;2 3,2 .<!2'`).\n5 3`5"
+-"'2`9 `!2 `4!><3;5! J2$b,`!>;2!:2!`,d?b`!>\n26 `'-;,(<9!> $F3 )3.:!.2 d\""
+-"2 ) !>\n30 7`2'<3!- \"=-='5 .2 `2-=\",!>\n25 .ze9$er2 .,cd16$bc.'\n22 .e"
+-"14$,26$.\n21 z45$c .\n20 J50$c\n20 14$P\"`?34$b\n20 14$ dbc `2\"?22$?7$c"
+-"\n20 ?18$c.6 4\"8?4\" c8$P\n9 .2,.8 \"20$c.3 ._14 J9$\n .2,2c9$bec,.2 `?"
+-"21$c.3`4%,3%,3 c8$P\"\n22$c2 2\"?21$bc2,.2` .2,c7$P2\",cb\n23$b bc,.2\"2"
+-"?14$2F2\"5?2\",J5$P\" ,zd3$\n24$ ?$3?%3 `2\"2?12$bcucd3$P3\"2 2=7$\n23$P"
+-"\" ,3;<5!>2;,. `4\"6?2\"2 ,9;, `\"?2$\n";
++      " 13 ,3;2!2;\n8 ,;<11!;\n5 `'<10!(2`'2!\n11 ,6;, `\\. `\\9 .,c13$ec,.\n6 "
++      ",2;11!>; `. ,;!2> .e8$2\".2 \"?7$e.\n <:<8!'` 2.3,.2` ,3!' ;,(?7\";2!2'<"
++      "; `?6$PF ,;,\n2 `'4!8;<!3'`2 3! ;,`'2`2'3!;4!`2.`!;2 3,2 .<!2'`).\n5 3`5"
++      "'2`9 `!2 `4!><3;5! J2$b,`!>;2!:2!`,d?b`!>\n26 `'-;,(<9!> $F3 )3.:!.2 d\""
++      "2 ) !>\n30 7`2'<3!- \"=-='5 .2 `2-=\",!>\n25 .ze9$er2 .,cd16$bc.'\n22 .e"
++      "14$,26$.\n21 z45$c .\n20 J50$c\n20 14$P\"`?34$b\n20 14$ dbc `2\"?22$?7$c"
++      "\n20 ?18$c.6 4\"8?4\" c8$P\n9 .2,.8 \"20$c.3 ._14 J9$\n .2,2c9$bec,.2 `?"
++      "21$c.3`4%,3%,3 c8$P\"\n22$c2 2\"?21$bc2,.2` .2,c7$P2\",cb\n23$b bc,.2\"2"
++      "?14$2F2\"5?2\",J5$P\" ,zd3$\n24$ ?$3?%3 `2\"2?12$bcucd3$P3\"2 2=7$\n23$P"
++      "\" ,3;<5!>2;,. `4\"6?2\"2 ,9;, `\"?2$\n";
+   int count = 0;
+   for (const char* p = urtle; *p; p++) {
+     if ('0' <= *p && *p <= '9') {
+-      count = count*10 + *p - '0';
++      count = count * 10 + *p - '0';
+     } else {
+       for (int i = 0; i < max(count, 1); ++i)
+         printf("%c", *p);
+@@ -952,30 +1008,29 @@ const Tool* ChooseTool(const string& tool_name) {
+     { "msvc", "build helper for MSVC cl.exe (EXPERIMENTAL)",
+       Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolMSVC },
+ #endif
+-    { "clean", "clean built files",
+-      Tool::RUN_AFTER_LOAD, &NinjaMain::ToolClean },
++    { "clean", "clean built files", Tool::RUN_AFTER_LOAD,
++      &NinjaMain::ToolClean },
+     { "commands", "list all commands required to rebuild given targets",
+       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolCommands },
+-    { "deps", "show dependencies stored in the deps log",
+-      Tool::RUN_AFTER_LOGS, &NinjaMain::ToolDeps },
+-    { "graph", "output graphviz dot file for targets",
+-      Tool::RUN_AFTER_LOAD, &NinjaMain::ToolGraph },
+-    { "query", "show inputs/outputs for a path",
+-      Tool::RUN_AFTER_LOGS, &NinjaMain::ToolQuery },
+-    { "targets",  "list targets by their rule or depth in the DAG",
++    { "deps", "show dependencies stored in the deps log", Tool::RUN_AFTER_LOGS,
++      &NinjaMain::ToolDeps },
++    { "graph", "output graphviz dot file for targets", Tool::RUN_AFTER_LOAD,
++      &NinjaMain::ToolGraph },
++    { "query", "show inputs/outputs for a path", Tool::RUN_AFTER_LOGS,
++      &NinjaMain::ToolQuery },
++    { "targets", "list targets by their rule or depth in the DAG",
+       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolTargets },
+-    { "compdb",  "dump JSON compilation database to stdout",
++    { "compdb", "dump JSON compilation database to stdout",
+       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolCompilationDatabase },
+-    { "recompact",  "recompacts ninja-internal data structures",
++    { "recompact", "recompacts ninja-internal data structures",
+       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolRecompact },
+-    { "restat",  "restats all outputs in the build log",
+-      Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolRestat },
+-    { "rules",  "list all rules",
+-      Tool::RUN_AFTER_LOAD, &NinjaMain::ToolRules },
+-    { "cleandead",  "clean built files that are no longer produced by the manifest",
++    { "restat", "restats all outputs in the build log", Tool::RUN_AFTER_FLAGS,
++      &NinjaMain::ToolRestat },
++    { "rules", "list all rules", Tool::RUN_AFTER_LOAD, &NinjaMain::ToolRules },
++    { "cleandead",
++      "clean built files that are no longer produced by the manifest",
+       Tool::RUN_AFTER_LOGS, &NinjaMain::ToolCleanDead },
+-    { "urtle", NULL,
+-      Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolUrtle },
++    { "urtle", NULL, Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolUrtle },
+     { NULL, NULL, Tool::RUN_AFTER_FLAGS, NULL }
+   };
+ 
+@@ -998,8 +1053,8 @@ const Tool* ChooseTool(const string& tool_name) {
+     words.push_back(tool->name);
+   const char* suggestion = SpellcheckStringV(tool_name, words);
+   if (suggestion) {
+-    Fatal("unknown tool '%s', did you mean '%s'?",
+-          tool_name.c_str(), suggestion);
++    Fatal("unknown tool '%s', did you mean '%s'?", tool_name.c_str(),
++          suggestion);
+   } else {
+     Fatal("unknown tool '%s'", tool_name.c_str());
+   }
+@@ -1010,15 +1065,16 @@ const Tool* ChooseTool(const string& tool_name) {
+ /// of continuing.
+ bool DebugEnable(const string& name) {
+   if (name == "list") {
+-    printf("debugging modes:\n"
+-"  stats        print operation counts/timing info\n"
+-"  explain      explain what caused a command to execute\n"
+-"  keepdepfile  don't delete depfiles after they're read by ninja\n"
+-"  keeprsp      don't delete @response files on success\n"
++    printf(
++        "debugging modes:\n"
++        "  stats        print operation counts/timing info\n"
++        "  explain      explain what caused a command to execute\n"
++        "  keepdepfile  don't delete depfiles after they're read by ninja\n"
++        "  keeprsp      don't delete @response files on success\n"
+ #ifdef _WIN32
+-"  nostatcache  don't batch stat() calls per directory and cache them\n"
++        "  nostatcache  don't batch stat() calls per directory and cache them\n"
+ #endif
+-"multiple modes can be enabled via -d FOO -d BAR\n");
++        "multiple modes can be enabled via -d FOO -d BAR\n");
+     return false;
+   } else if (name == "stats") {
+     g_metrics = new Metrics;
+@@ -1037,12 +1093,11 @@ bool DebugEnable(const string& name) {
+     return true;
+   } else {
+     const char* suggestion =
+-        SpellcheckString(name.c_str(),
+-                         "stats", "explain", "keepdepfile", "keeprsp",
+-                         "nostatcache", NULL);
++        SpellcheckString(name.c_str(), "stats", "explain", "keepdepfile",
++                         "keeprsp", "nostatcache", NULL);
+     if (suggestion) {
+-      Error("unknown debug setting '%s', did you mean '%s'?",
+-            name.c_str(), suggestion);
++      Error("unknown debug setting '%s', did you mean '%s'?", name.c_str(),
++            suggestion);
+     } else {
+       Error("unknown debug setting '%s'", name.c_str());
+     }
+@@ -1054,10 +1109,10 @@ bool DebugEnable(const string& name) {
+ /// continuing.
+ bool WarningEnable(const string& name, Options* options) {
+   if (name == "list") {
+-    printf("warning flags:\n"
+-"  dupbuild={err,warn}  multiple build lines for one target\n"
+-"  phonycycle={err,warn}  phony build statement references itself\n"
+-    );
++    printf(
++        "warning flags:\n"
++        "  dupbuild={err,warn}  multiple build lines for one target\n"
++        "  phonycycle={err,warn}  phony build statement references itself\n");
+     return false;
+   } else if (name == "dupbuild=err") {
+     options->dupe_edges_should_err = true;
+@@ -1071,8 +1126,7 @@ bool WarningEnable(const string& name, Options* options) {
+   } else if (name == "phonycycle=warn") {
+     options->phony_cycle_should_err = false;
+     return true;
+-  } else if (name == "depfilemulti=err" ||
+-             name == "depfilemulti=warn") {
++  } else if (name == "depfilemulti=err" || name == "depfilemulti=warn") {
+     Warning("deprecated warning 'depfilemulti'");
+     return true;
+   } else {
+@@ -1080,8 +1134,8 @@ bool WarningEnable(const string& name, Options* options) {
+         SpellcheckString(name.c_str(), "dupbuild=err", "dupbuild=warn",
+                          "phonycycle=err", "phonycycle=warn", NULL);
+     if (suggestion) {
+-      Error("unknown warning flag '%s', did you mean '%s'?",
+-            name.c_str(), suggestion);
++      Error("unknown warning flag '%s', did you mean '%s'?", name.c_str(),
++            suggestion);
+     } else {
+       Error("unknown warning flag '%s'", name.c_str());
+     }
+@@ -1172,36 +1226,37 @@ void NinjaMain::DumpMetrics() {
+   int count = (int)state_.paths_.size();
+   int buckets = (int)state_.paths_.bucket_count();
+   printf("path->node hash load %.2f (%d entries / %d buckets)\n",
+-         count / (double) buckets, count, buckets);
++         count / (double)buckets, count, buckets);
+ }
+ 
+ bool NinjaMain::EnsureBuildDirExists() {
+   build_dir_ = state_.bindings_.LookupVariable("builddir");
+   if (!build_dir_.empty() && !config_.dry_run) {
+     if (!disk_interface_.MakeDirs(build_dir_ + "/.") && errno != EEXIST) {
+-      Error("creating build directory %s: %s",
+-            build_dir_.c_str(), strerror(errno));
++      Error("creating build directory %s: %s", build_dir_.c_str(),
++            strerror(errno));
+       return false;
+     }
+   }
+   return true;
+ }
+ 
+-int NinjaMain::RunBuild(int argc, char** argv) {
++int NinjaMain::RunBuild(int argc, char** argv, Status* status) {
    string err;
--  EXPECT_FALSE(parser.ParseTest("rule cc\n  command = foo\n  deps = gcc\n"
-+  EXPECT_TRUE(parser.ParseTest("rule cc\n  command = foo\n  deps = gcc\n"
-                                "build a.o b.o: cc c.cc\n",
-                                &err));
--  EXPECT_EQ("input:5: multiple outputs aren't (yet?) supported by depslog; "
--            "bring this up on the mailing list if it affects you\n", err);
-+  EXPECT_EQ("", err);
+   vector<Node*> targets;
+   if (!CollectTargetsFromArgs(argc, argv, &targets, &err)) {
+-    Error("%s", err.c_str());
++    status->Error("%s", err.c_str());
+     return 1;
+   }
+ 
+   disk_interface_.AllowStatCache(g_experimental_statcache);
+ 
+-  Builder builder(&state_, config_, &build_log_, &deps_log_, &disk_interface_);
++  Builder builder(&state_, config_, &build_log_, &deps_log_, &disk_interface_,
++                  status, GetTimeMillis());
+   for (size_t i = 0; i < targets.size(); ++i) {
+     if (!builder.AddTarget(targets[i], &err)) {
+       if (!err.empty()) {
+-        Error("%s", err.c_str());
++        status->Error("%s", err.c_str());
+         return 1;
+       } else {
+         // Added a target that is already up-to-date; not really
+@@ -1214,12 +1269,12 @@ int NinjaMain::RunBuild(int argc, char** argv) {
+   disk_interface_.AllowStatCache(false);
+ 
+   if (builder.AlreadyUpToDate()) {
+-    printf("ninja: no work to do.\n");
++    status->Info("no work to do.");
+     return 0;
+   }
+ 
+   if (!builder.Build(&err)) {
+-    printf("ninja: build stopped: %s.\n", err.c_str());
++    status->Info("build stopped: %s.", err.c_str());
+     if (err.find("interrupted by user") != string::npos) {
+       return 2;
+     }
+@@ -1243,7 +1298,7 @@ void TerminateHandler() {
+ 
+ /// On Windows, we want to prevent error dialogs in case of exceptions.
+ /// This function handles the exception, and writes a minidump.
+-int ExceptionFilter(unsigned int code, struct _EXCEPTION_POINTERS *ep) {
++int ExceptionFilter(unsigned int code, struct _EXCEPTION_POINTERS* ep) {
+   Error("exception: 0x%X", code);  // e.g. EXCEPTION_ACCESS_VIOLATION
+   fflush(stderr);
+   CreateWin32MiniDump(ep);
+@@ -1254,91 +1309,128 @@ int ExceptionFilter(unsigned int code, struct _EXCEPTION_POINTERS *ep) {
+ 
+ /// Parse argv for command-line options.
+ /// Returns an exit code, or -1 if Ninja should continue.
+-int ReadFlags(int* argc, char*** argv,
+-              Options* options, BuildConfig* config) {
++int ReadFlags(int* argc, char*** argv, Options* options, BuildConfig* config) {
+   config->parallelism = GuessParallelism();
+ 
+-  enum { OPT_VERSION = 1 };
++  enum {
++    OPT_VERSION = 1,
++#ifndef _WIN32
++    OPT_FRONTEND,
++    OPT_FRONTEND_FILE,
++#endif
++    OPT_QUIET,
++  };
+   const option kLongOptions[] = {
+     { "help", no_argument, NULL, 'h' },
+     { "version", no_argument, NULL, OPT_VERSION },
+     { "verbose", no_argument, NULL, 'v' },
++    { "quiet", no_argument, NULL, OPT_QUIET },
++#ifndef _WIN32
++    { "frontend", required_argument, NULL, OPT_FRONTEND },
++    { "frontend_file", required_argument, NULL, OPT_FRONTEND_FILE },
++#endif
+     { NULL, 0, NULL, 0 }
+   };
+ 
+   int opt;
+   while (!options->tool &&
+-         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:nt:vw:C:h", kLongOptions,
+-                            NULL)) != -1) {
++         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:nt:vw:o:C:ph",
++                            kLongOptions, NULL)) != -1) {
+     switch (opt) {
+-      case 'd':
+-        if (!DebugEnable(optarg))
+-          return 1;
+-        break;
+-      case 'f':
+-        options->input_file = optarg;
+-        break;
+-      case 'j': {
+-        char* end;
+-        int value = strtol(optarg, &end, 10);
+-        if (*end != 0 || value < 0)
+-          Fatal("invalid -j parameter");
+-
+-        // We want to run N jobs in parallel. For N = 0, INT_MAX
+-        // is close enough to infinite for most sane builds.
+-        config->parallelism = value > 0 ? value : INT_MAX;
+-        break;
+-      }
+-      case 'k': {
+-        char* end;
+-        int value = strtol(optarg, &end, 10);
+-        if (*end != 0)
+-          Fatal("-k parameter not numeric; did you mean -k 0?");
+-
+-        // We want to go until N jobs fail, which means we should allow
+-        // N failures and then stop.  For N <= 0, INT_MAX is close enough
+-        // to infinite for most sane builds.
+-        config->failures_allowed = value > 0 ? value : INT_MAX;
+-        break;
+-      }
+-      case 'l': {
+-        char* end;
+-        double value = strtod(optarg, &end);
+-        if (end == optarg)
+-          Fatal("-l parameter not numeric: did you mean -l 0.0?");
+-        config->max_load_average = value;
+-        break;
+-      }
+-      case 'n':
+-        config->dry_run = true;
+-        break;
+-      case 't':
+-        options->tool = ChooseTool(optarg);
+-        if (!options->tool)
+-          return 0;
+-        break;
+-      case 'v':
+-        config->verbosity = BuildConfig::VERBOSE;
+-        break;
+-      case 'w':
+-        if (!WarningEnable(optarg, options))
+-          return 1;
+-        break;
+-      case 'C':
+-        options->working_dir = optarg;
+-        break;
+-      case OPT_VERSION:
+-        printf("%s\n", kNinjaVersion);
++    case 'd':
++      if (!DebugEnable(optarg))
++        return 1;
++      break;
++    case 'f':
++      options->input_file = optarg;
++      break;
++    case 'j': {
++      char* end;
++      int value = strtol(optarg, &end, 10);
++      if (*end != 0 || value < 0)
++        Fatal("invalid -j parameter");
++
++      // We want to run N jobs in parallel. For N = 0, INT_MAX
++      // is close enough to infinite for most sane builds.
++      config->parallelism = value > 0 ? value : INT_MAX;
++      break;
++    }
++    case 'k': {
++      char* end;
++      int value = strtol(optarg, &end, 10);
++      if (*end != 0)
++        Fatal("-k parameter not numeric; did you mean -k 0?");
++
++      // We want to go until N jobs fail, which means we should allow
++      // N failures and then stop.  For N <= 0, INT_MAX is close enough
++      // to infinite for most sane builds.
++      config->failures_allowed = value > 0 ? value : INT_MAX;
++      break;
++    }
++    case 'l': {
++      char* end;
++      double value = strtod(optarg, &end);
++      if (end == optarg)
++        Fatal("-l parameter not numeric: did you mean -l 0.0?");
++      config->max_load_average = value;
++      break;
++    }
++    case 'n':
++      config->dry_run = true;
++      break;
++    case 't':
++      options->tool = ChooseTool(optarg);
++      if (!options->tool)
+         return 0;
+-      case 'h':
+-      default:
+-        Usage(*config);
++      break;
++    case 'v':
++      config->verbosity = BuildConfig::VERBOSE;
++      break;
++    case OPT_QUIET:
++      config->verbosity = BuildConfig::NO_STATUS_UPDATE;
++      break;
++    case 'w':
++      if (!WarningEnable(optarg, options))
++        return 1;
++      break;
++    case 'o':
++      if (!OptionEnable(optarg, options, config))
+         return 1;
++      break;
++    case 'C':
++      options->working_dir = optarg;
++      break;
++    case 'p':
++      options->persistent = true;
++      break;
++    case OPT_VERSION:
++      printf("%s\n", kNinjaVersion);
++      return 0;
++#ifndef _WIN32
++    case OPT_FRONTEND:
++      config->frontend = optarg;
++      break;
++    case OPT_FRONTEND_FILE:
++      config->frontend_file = optarg;
++      break;
++#endif
++    case 'h':
++    default:
++      Usage(*config);
++      return 1;
+     }
+   }
+   *argv += optind;
+   *argc -= optind;
+ 
++#ifndef _WIN32
++  if (config->frontend && config->frontend_file)
++    Fatal("only one of --frontend or --frontend_file may be specified.");
++#endif
++
++  if (config->pre_remove_output_files && !config->uses_phony_outputs)
++    Fatal("preremoveoutputs=yes requires usesphonyoutputs=yes.");
++
+   return -1;
  }
  
- TEST_F(ParserTest, SubNinja) {
+@@ -1379,9 +1471,19 @@ NORETURN void real_main(int argc, char** argv) {
+ 
+   // Limit number of rebuilds, to prevent infinite loops.
+   const int kCycleLimit = 100;
++  Status* status = NULL;
+   for (int cycle = 1; cycle <= kCycleLimit; ++cycle) {
+     NinjaMain ninja(ninja_command, config);
+ 
++    if (status == NULL) {
++#ifndef _WIN32
++      if (config.frontend != NULL || config.frontend_file != NULL)
++        status = new StatusSerializer(config);
++      else
++#endif
++        status = new StatusPrinter(config);
++    }
++
+     ManifestParserOptions parser_opts;
+     if (options.dupe_edges_should_err) {
+       parser_opts.dupe_edge_action_ = kDupeEdgeActionError;
+@@ -1392,7 +1494,7 @@ NORETURN void real_main(int argc, char** argv) {
+     ManifestParser parser(&ninja.state_, &ninja.disk_interface_, parser_opts);
+     string err;
+     if (!parser.Load(options.input_file, &err)) {
+-      Error("%s", err.c_str());
++      status->Error("%s", err.c_str());
+       exit(1);
+     }
+ 
+@@ -1417,18 +1519,20 @@ NORETURN void real_main(int argc, char** argv) {
+       // Start the build over with the new manifest.
+       continue;
+     } else if (!err.empty()) {
+-      Error("rebuilding '%s': %s", options.input_file, err.c_str());
++      status->Error("rebuilding '%s': %s", options.input_file, err.c_str());
+       exit(1);
+     }
+ 
+-    int result = ninja.RunBuild(argc, argv);
++    int result = ninja.RunBuild(argc, argv, status);
+     if (g_metrics)
+       ninja.DumpMetrics();
++    delete status;
+     exit(result);
+   }
+ 
+-  Error("manifest '%s' still dirty after %d tries\n",
+-      options.input_file, kCycleLimit);
++  status->Error("manifest '%s' still dirty after %d tries", options.input_file,
++                kCycleLimit);
++  delete status;
+   exit(1);
+ }
+ 
+@@ -1443,8 +1547,7 @@ int main(int argc, char** argv) {
+     // Running inside __try ... __except suppresses any Windows error
+     // dialogs for errors such as bad_alloc.
+     real_main(argc, argv);
+-  }
+-  __except(ExceptionFilter(GetExceptionCode(), GetExceptionInformation())) {
++  } __except (ExceptionFilter(GetExceptionCode(), GetExceptionInformation())) {
+     // Common error situations return exitCode=1. 2 was chosen to
+     // indicate a more serious problem.
+     return 2;
+diff --git a/src/proto.cc b/src/proto.cc
+new file mode 100644
+index 0000000..dd08109
+--- /dev/null
++++ b/src/proto.cc
+@@ -0,0 +1,78 @@
++// Copyright 2017 Google Inc. All Rights Reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#define __STDC_LIMIT_MACROS
++
++#include "proto.h"
++
++#include <inttypes.h>
++#include <stdint.h>
++
++namespace {
++enum WireType {
++  WIRETYPE_VARINT = 0,
++  WIRETYPE_LENGTH_DELIMITED = 2,
++};
++
++static uint8_t MakeTag(int number, WireType wire_type) {
++  return (number << 3) | static_cast<uint8_t>(wire_type);
++}
++}  // namespace
++
++void WriteVarint32NoTag(std::ostream* output, uint32_t value) {
++  uint8_t buf[5];
++  uint8_t* target = buf;
++  while (value >= 0x80) {
++    *target++ = static_cast<uint8_t>(value | 0x80);
++    value >>= 7;
++  }
++  *target++ = static_cast<uint8_t>(value);
++  output->write(reinterpret_cast<char*>(buf), target - buf);
++}
++
++void WriteVarint32(std::ostream* output, int number, uint32_t value) {
++  output->put(static_cast<char>(MakeTag(number, WIRETYPE_VARINT)));
++  WriteVarint32NoTag(output, value);
++}
++
++void WriteVarint32SignExtended(std::ostream* output, int number,
++                               int32_t value) {
++  if (value < 0) {
++    WriteVarint64(output, number, static_cast<uint64_t>(value));
++  } else {
++    WriteVarint32(output, number, static_cast<uint32_t>(value));
++  }
++}
++
++void WriteVarint64(std::ostream* output, int number, uint64_t value) {
++  output->put(static_cast<char>(MakeTag(number, WIRETYPE_VARINT)));
++  uint8_t buf[10];
++  uint8_t* target = buf;
++  while (value >= 0x80) {
++    *target++ = static_cast<uint8_t>(value | 0x80);
++    value >>= 7;
++  }
++  *target++ = static_cast<uint8_t>(value);
++  output->write(reinterpret_cast<char*>(buf), target - buf);
++}
++
++void WriteString(std::ostream* output, int number, const std::string& value) {
++  WriteLengthDelimited(output, number, value.size());
++  output->write(value.data(), value.size());
++}
++
++void WriteLengthDelimited(std::ostream* output, int number, size_t size) {
++  output->put(static_cast<char>(MakeTag(number, WIRETYPE_LENGTH_DELIMITED)));
++  WriteVarint32NoTag(output, static_cast<uint32_t>(size));
++}
+diff --git a/src/proto.h b/src/proto.h
+new file mode 100644
+index 0000000..6ffae62
+--- /dev/null
++++ b/src/proto.h
+@@ -0,0 +1,77 @@
++// Copyright 2017 Google Inc. All Rights Reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#ifndef NINJA_PROTO_H_
++#define NINJA_PROTO_H_
++
++#include <cstdint>
++#include <iostream>
++
++static inline uint32_t ZigZagEncode32(int32_t n) {
++  return (static_cast<uint32_t>(n) << 1) ^ (n >> 31);
++}
++
++static inline size_t VarintSize32(uint32_t value) {
++  if (value < (1 << 7))
++    return 1;
++  if (value < (1 << 14))
++    return 2;
++  if (value < (1 << 21))
++    return 3;
++  if (value < (1 << 28))
++    return 4;
++  return 5;
++}
++
++static inline size_t VarintSize32SignExtended(int32_t value) {
++  return value < 0 ? 10 : VarintSize32(static_cast<uint32_t>(value));
++}
++
++static inline size_t VarintSize64(uint64_t value) {
++  if (value < (1ull << 7))
++    return 1;
++  if (value < (1ull << 14))
++    return 2;
++  if (value < (1ull << 21))
++    return 3;
++  if (value < (1ull << 28))
++    return 4;
++  if (value < (1ull << 35))
++    return 5;
++  if (value < (1ull << 42))
++    return 6;
++  if (value < (1ull << 49))
++    return 7;
++  if (value < (1ull << 56))
++    return 8;
++  if (value < (1ull << 63))
++    return 9;
++  return 10;
++}
++
++static inline size_t VarintSizeBool(bool) {
++  return 1;
++}
++static inline size_t StringSize(const std::string& value) {
++  return VarintSize32(static_cast<uint32_t>(value.size())) + value.size();
++}
++
++void WriteVarint32(std::ostream* output, int number, uint32_t value);
++void WriteVarint32NoTag(std::ostream* output, uint32_t value);
++void WriteVarint32SignExtended(std::ostream* output, int number, int32_t value);
++void WriteVarint64(std::ostream* output, int number, uint64_t value);
++void WriteString(std::ostream* output, int number, const std::string& value);
++void WriteLengthDelimited(std::ostream* output, int number, size_t size);
++
++#endif  // NINJA_PROTO_H_
+diff --git a/src/state.cc b/src/state.cc
+index 74cf4c1..db73f6f 100644
+--- a/src/state.cc
++++ b/src/state.cc
+@@ -22,7 +22,6 @@
+ #include "metrics.h"
+ #include "util.h"
+ 
+-
+ void Pool::EdgeScheduled(const Edge& edge) {
+   if (depth_ != 0)
+     current_use_ += edge.weight();
+@@ -53,9 +52,8 @@ void Pool::RetrieveReadyEdges(set<Edge*>* ready_queue) {
+ 
+ void Pool::Dump() const {
+   printf("%s (%d/%d) ->\n", name_.c_str(), current_use_, depth_);
+-  for (DelayedEdges::const_iterator it = delayed_.begin();
+-       it != delayed_.end(); ++it)
+-  {
++  for (DelayedEdges::const_iterator it = delayed_.begin(); it != delayed_.end();
++       ++it) {
+     printf("\t");
+     (*it)->Dump();
+   }
+@@ -63,8 +61,10 @@ void Pool::Dump() const {
+ 
+ // static
+ bool Pool::WeightedEdgeCmp(const Edge* a, const Edge* b) {
+-  if (!a) return b;
+-  if (!b) return false;
++  if (!a)
++    return b;
++  if (!b)
++    return false;
+   int weight_diff = a->weight() - b->weight();
+   return ((weight_diff < 0) || (weight_diff == 0 && a < b));
+ }
+@@ -96,6 +96,7 @@ Edge* State::AddEdge(const Rule* rule) {
+   edge->rule_ = rule;
+   edge->pool_ = &State::kDefaultPool;
+   edge->env_ = &bindings_;
++  edge->id_ = edges_.size();
+   edges_.push_back(edge);
+   return edge;
+ }
+@@ -124,8 +125,8 @@ Node* State::SpellcheckNode(const string& path) {
+   int min_distance = kMaxValidEditDistance + 1;
+   Node* result = NULL;
+   for (Paths::iterator i = paths_.begin(); i != paths_.end(); ++i) {
+-    int distance = EditDistance(
+-        i->first, path, kAllowReplacements, kMaxValidEditDistance);
++    int distance =
++        EditDistance(i->first, path, kAllowReplacements, kMaxValidEditDistance);
+     if (distance < min_distance && i->second) {
+       min_distance = distance;
+       result = i->second;
+@@ -162,8 +163,8 @@ bool State::AddDefault(StringPiece path, string* err) {
+ vector<Node*> State::RootNodes(string* err) const {
+   vector<Node*> root_nodes;
+   // Search for nodes with no output.
+-  for (vector<Edge*>::const_iterator e = edges_.begin();
+-       e != edges_.end(); ++e) {
++  for (vector<Edge*>::const_iterator e = edges_.begin(); e != edges_.end();
++       ++e) {
+     for (vector<Node*>::const_iterator out = (*e)->outputs_.begin();
+          out != (*e)->outputs_.end(); ++out) {
+       if ((*out)->out_edges().empty())
+@@ -194,17 +195,15 @@ void State::Reset() {
+ void State::Dump() {
+   for (Paths::iterator i = paths_.begin(); i != paths_.end(); ++i) {
+     Node* node = i->second;
+-    printf("%s %s [id:%d]\n",
+-           node->path().c_str(),
+-           node->status_known() ? (node->dirty() ? "dirty" : "clean")
+-                                : "unknown",
+-           node->id());
++    printf(
++        "%s %s [id:%d]\n", node->path().c_str(),
++        node->status_known() ? (node->dirty() ? "dirty" : "clean") : "unknown",
++        node->id());
+   }
+   if (!pools_.empty()) {
+     printf("resource_pools:\n");
+     for (map<string, Pool*>::const_iterator it = pools_.begin();
+-         it != pools_.end(); ++it)
+-    {
++         it != pools_.end(); ++it) {
+       if (!it->second->name().empty()) {
+         it->second->Dump();
+       }
+diff --git a/src/status.cc b/src/status.cc
+new file mode 100644
+index 0000000..592c396
+--- /dev/null
++++ b/src/status.cc
+@@ -0,0 +1,349 @@
++// Copyright 2016 Google Inc. All Rights Reserved.
++
++#include "status.h"
++
++#include <errno.h>
++#include <stdlib.h>
++#include <unistd.h>
++
++#include "debug_flags.h"
++#include "proto.h"
++
++StatusPrinter::StatusPrinter(const BuildConfig& config)
++    : config_(config), started_edges_(0), finished_edges_(0), total_edges_(0),
++      running_edges_(0), time_millis_(0), progress_status_format_(NULL),
++      current_rate_(config.parallelism) {
++  if (config_.verbosity != BuildConfig::NORMAL)
++    printer_.set_smart_terminal(false);
++  progress_status_format_ = getenv("NINJA_STATUS");
++  if (!progress_status_format_)
++    progress_status_format_ = "[%f/%t] ";
++}
++
++void StatusPrinter::PlanHasTotalEdges(int total) {
++  total_edges_ = total;
++}
++
++void StatusPrinter::BuildEdgeStarted(Edge* edge, int64_t start_time_millis) {
++  ++started_edges_;
++  ++running_edges_;
++  time_millis_ = start_time_millis;
++  if (edge->use_console() || printer_.is_smart_terminal())
++    PrintStatus(edge, start_time_millis);
++  if (edge->use_console())
++    printer_.SetConsoleLocked(true);
++}
++
++void StatusPrinter::BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
++                                      const CommandRunner::Result* result) {
++  time_millis_ = end_time_millis;
++  ++finished_edges_;
++  if (edge->use_console())
++    printer_.SetConsoleLocked(false);
++  if (config_.verbosity == BuildConfig::QUIET)
++    return;
++  if (!edge->use_console())
++    PrintStatus(edge, end_time_millis);
++  --running_edges_;
++  if (!result->success()) {
++    string outputs;
++    for (vector<Node*>::const_iterator o = edge->outputs_.begin();
++         o != edge->outputs_.end(); ++o)
++      outputs += (*o)->path() + " ";
++    printer_.PrintOnNewLine("FAILED: " + outputs + "\n");
++    printer_.PrintOnNewLine(edge->EvaluateCommand() + "\n");
++  }
++  if (!result->output.empty()) {
++    string final_output = printer_.supports_color()
++                              ? result->output
++                              : StripAnsiEscapeCodes(result->output);
++    printer_.PrintOnNewLine(final_output);
++  }
++}
++
++void StatusPrinter::BuildLoadDyndeps() {
++  if (g_explaining)
++    printer_.PrintOnNewLine("");
++}
++
++void StatusPrinter::BuildStarted() {
++  started_edges_ = 0;
++  finished_edges_ = 0;
++  running_edges_ = 0;
++}
++
++void StatusPrinter::BuildFinished() {
++  printer_.SetConsoleLocked(false);
++  printer_.PrintOnNewLine("");
++}
++
++string StatusPrinter::FormatProgressStatus(const char* fmt,
++                                           int64_t time_millis) const {
++  string out;
++  char buf[32];
++  for (const char* s = fmt; *s != '\0'; ++s) {
++    if (*s != '%') {
++      out.push_back(*s);
++      continue;
++    }
++    ++s;
++    switch (*s) {
++    case '%':
++      out.push_back('%');
++      break;
++    case 's':
++      snprintf(buf, sizeof(buf), "%d", started_edges_);
++      out += buf;
++      break;
++    case 't':
++      snprintf(buf, sizeof(buf), "%d", total_edges_);
++      out += buf;
++      break;
++    case 'r':
++      snprintf(buf, sizeof(buf), "%d", running_edges_);
++      out += buf;
++      break;
++    case 'u':
++      snprintf(buf, sizeof(buf), "%d", total_edges_ - started_edges_);
++      out += buf;
++      break;
++    case 'f':
++      snprintf(buf, sizeof(buf), "%d", finished_edges_);
++      out += buf;
++      break;
++    case 'o':
++      SnprintfRate(finished_edges_ / (time_millis_ / 1e3), buf, "%.1f");
++      out += buf;
++      break;
++    case 'c':
++      current_rate_.UpdateRate(finished_edges_, time_millis_);
++      SnprintfRate(current_rate_.rate(), buf, "%.1f");
++      out += buf;
++      break;
++    case 'p':
++      snprintf(buf, sizeof(buf), "%3i%%",
++               (100 * finished_edges_) / total_edges_);
++      out += buf;
++      break;
++    case 'e':
++      snprintf(buf, sizeof(buf), "%.3f", time_millis / 1e3);
++      out += buf;
++      break;
++    default:
++      Fatal("unknown placeholder '%%%c' in $NINJA_STATUS", *s);
++    }
++  }
++  return out;
++}
++
++void StatusPrinter::PrintStatus(Edge* edge, int64_t time_millis) {
++  if (config_.verbosity == BuildConfig::QUIET ||
++      config_.verbosity == BuildConfig::NO_STATUS_UPDATE)
++    return;
++  bool force_full_command = config_.verbosity == BuildConfig::VERBOSE;
++  string to_print = edge->GetBinding("description");
++  if (to_print.empty() || force_full_command)
++    to_print = edge->GetBinding("command");
++  to_print =
++      FormatProgressStatus(progress_status_format_, time_millis) + to_print;
++  printer_.Print(to_print,
++                 force_full_command ? LinePrinter::FULL : LinePrinter::ELIDE);
++}
++
++void StatusPrinter::Warning(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  fprintf(stderr, "ninja: warning: ");
++  vfprintf(stderr, msg, ap);
++  fprintf(stderr, "\n");
++  va_end(ap);
++}
++void StatusPrinter::Error(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  fprintf(stderr, "ninja: error: ");
++  vfprintf(stderr, msg, ap);
++  fprintf(stderr, "\n");
++  va_end(ap);
++}
++void StatusPrinter::Info(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  vfprintf(stdout, msg, ap);
++  fprintf(stdout, "\n");
++  va_end(ap);
++}
++void StatusPrinter::Debug(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  vfprintf(stdout, msg, ap);
++  fprintf(stdout, "\n");
++  va_end(ap);
++}
++
++#ifndef _WIN32
++
++StatusSerializer::StatusSerializer(const BuildConfig& config)
++    : config_(config), f_(NULL), filebuf_(NULL), out_(NULL), subprocess_(NULL),
++      total_edges_(0) {
++  if (config.frontend != NULL) {
++    int output_pipe[2];
++    if (pipe(output_pipe) < 0)
++      Fatal("pipe: %s", strerror(errno));
++    SetCloseOnExec(output_pipe[1]);
++    f_ = fdopen(output_pipe[1], "wb");
++    EdgeCommand c;
++    c.command = config.frontend;
++    c.use_console = true;
++    subprocess_ = subprocess_set_.Add(c, output_pipe[0]);
++    close(output_pipe[0]);
++  } else if (config.frontend_file != NULL) {
++    f_ = fopen(config.frontend_file, "wb");
++    if (!f_)
++      Fatal("fopen: %s", strerror(errno));
++    SetCloseOnExec(fileno(f_));
++  } else {
++    Fatal("No output specified for serialization");
++  }
++  setvbuf(f_, NULL, _IONBF, 0);
++  filebuf_ = new ofilebuf(f_);
++  out_ = new std::ostream(filebuf_);
++}
++
++StatusSerializer::~StatusSerializer() {
++  delete out_;
++  delete filebuf_;
++  fclose(f_);
++  if (subprocess_ != NULL) {
++    subprocess_->Finish();
++    subprocess_set_.Clear();
++  }
++}
++
++void StatusSerializer::AddEstimatedTime(int64_t estimated_time_millis) {
++  estimated_total_time_millis_ += estimated_time_millis;
++  estimated_edges_++;
++}
++
++void StatusSerializer::SetCriticalPathTime(int64_t critical_path_time_millis) {
++  critical_path_time_millis_ = critical_path_time_millis;
++}
++
++void StatusSerializer::Send() {
++  WriteVarint32NoTag(out_, proto_.ByteSizeLong());
++  proto_.SerializeToOstream(out_);
++  proto_.Clear();
++  out_->flush();
++}
++
++void StatusSerializer::PlanHasTotalEdges(int total) {
++  if (total_edges_ != total) {
++    total_edges_ = total;
++    ninja::Status::TotalEdges* total_edges = proto_.mutable_total_edges();
++    total_edges->set_total_edges(total_edges_);
++    Send();
++  }
++}
++
++void StatusSerializer::BuildEdgeStarted(Edge* edge, int64_t start_time_millis) {
++  ninja::Status::EdgeStarted* edge_started = proto_.mutable_edge_started();
++  edge_started->set_id(edge->id());
++  edge_started->set_start_time(start_time_millis);
++  for (vector<Node*>::iterator it = edge->outputs_.begin();
++       it != edge->outputs_.end(); ++it)
++    edge_started->add_outputs((*it)->path());
++  for (vector<Node*>::iterator it = edge->inputs_.begin();
++       it != edge->inputs_.end(); ++it)
++    edge_started->add_inputs((*it)->path());
++  edge_started->set_desc(edge->GetBinding("description"));
++  edge_started->set_command(edge->GetBinding("command"));
++  edge_started->set_console(edge->use_console());
++  Send();
++}
++
++static uint32_t timeval_to_ms(struct timeval tv) {
++  return tv.tv_sec * 1000 + tv.tv_usec / 1000;
++}
++
++void StatusSerializer::BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
++                                         const CommandRunner::Result* result) {
++  ninja::Status::EdgeFinished* edge_finished = proto_.mutable_edge_finished();
++  edge_finished->set_id(edge->id());
++  edge_finished->set_end_time(end_time_millis);
++  edge_finished->set_status(result->status);
++  edge_finished->set_output(result->output);
++  edge_finished->set_user_time(timeval_to_ms(result->rusage.ru_utime));
++  edge_finished->set_system_time(timeval_to_ms(result->rusage.ru_stime));
++  edge_finished->set_max_rss_kb(result->rusage.ru_maxrss);
++  edge_finished->set_minor_page_faults(result->rusage.ru_minflt);
++  edge_finished->set_major_page_faults(result->rusage.ru_majflt);
++  edge_finished->set_io_input_kb(result->rusage.ru_inblock / 2);
++  edge_finished->set_io_output_kb(result->rusage.ru_oublock / 2);
++  edge_finished->set_voluntary_context_switches(result->rusage.ru_nvcsw);
++  edge_finished->set_involuntary_context_switches(result->rusage.ru_nivcsw);
++  Send();
++}
++
++void StatusSerializer::BuildLoadDyndeps() {}
++
++void StatusSerializer::BuildStarted() {
++  ninja::Status::BuildStarted* build_started = proto_.mutable_build_started();
++  build_started->set_parallelism(config_.parallelism);
++  if (estimated_edges_ > total_edges_ * 0.5) {
++    build_started->set_critical_path_time(critical_path_time_millis_);
++    build_started->set_estimated_total_time(estimated_total_time_millis_ *
++                                            total_edges_ / estimated_edges_);
++  }
++  build_started->set_verbose(config_.verbosity == BuildConfig::VERBOSE);
++  Send();
++}
++
++void StatusSerializer::BuildFinished() {
++  proto_.mutable_build_finished();
++  Send();
++}
++
++void StatusSerializer::Message(ninja::Status::Message::Level level,
++                               const char* msg, va_list ap) {
++  va_list ap2;
++  va_copy(ap2, ap);
++  int len = vsnprintf(NULL, 0, msg, ap2);
++  va_end(ap2);
++  if (len < 0)
++    Fatal("vsnprintf failed");
++  string buf;
++  buf.resize(len + 1);
++  len = vsnprintf(&buf[0], len + 1, msg, ap);
++  buf.resize(len);
++  ninja::Status::Message* message = proto_.mutable_message();
++  message->set_level(level);
++  message->set_message(buf);
++  Send();
++}
++
++void StatusSerializer::Debug(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  Message(ninja::Status::Message::DEBUG, msg, ap);
++  va_end(ap);
++}
++void StatusSerializer::Info(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  Message(ninja::Status::Message::INFO, msg, ap);
++  va_end(ap);
++}
++void StatusSerializer::Warning(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  Message(ninja::Status::Message::WARNING, msg, ap);
++  va_end(ap);
++}
++void StatusSerializer::Error(const char* msg, ...) {
++  va_list ap;
++  va_start(ap, msg);
++  Message(ninja::Status::Message::ERROR, msg, ap);
++  va_end(ap);
++}
++
++#endif
+diff --git a/src/status.h b/src/status.h
+new file mode 100644
+index 0000000..7729278
+--- /dev/null
++++ b/src/status.h
+@@ -0,0 +1,153 @@
++// Copyright 2016 Google Inc. All Rights Reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#ifndef NINJA_STATUS_H_
++#define NINJA_STATUS_H_
++
++#include <stdarg.h>
++
++#include <map>
++#include <string>
++using namespace std;
++
++#include "build.h"
++#include "line_printer.h"
++#include "subprocess.h"
++
++struct Status {
++  virtual void PlanHasTotalEdges(int total) = 0;
++  virtual void BuildEdgeStarted(Edge* edge, int64_t start_time_millis) = 0;
++  virtual void BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
++                                 const CommandRunner::Result* result) = 0;
++  virtual void BuildLoadDyndeps() = 0;
++  virtual void BuildStarted() = 0;
++  virtual void BuildFinished() = 0;
++
++  virtual void Debug(const char* msg, ...) = 0;
++  virtual void Info(const char* msg, ...) = 0;
++  virtual void Warning(const char* msg, ...) = 0;
++  virtual void Error(const char* msg, ...) = 0;
++  virtual void AddEstimatedTime(int64_t estimated_time_millis) = 0;
++  virtual void SetCriticalPathTime(int64_t critical_path_time_millis) = 0;
++  virtual ~Status() {}
++};
++
++struct StatusPrinter : Status {
++  explicit StatusPrinter(const BuildConfig& config);
++  void PlanHasTotalEdges(int total) override;
++  void BuildEdgeStarted(Edge* edge, int64_t start_time_millis) override;
++  void BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
++                         const CommandRunner::Result* result) override;
++  void BuildLoadDyndeps() override;
++  void BuildStarted() override;
++  void BuildFinished() override;
++
++  void AddEstimatedTime(int64_t) override {}
++  void SetCriticalPathTime(int64_t) override {}
++  void Debug(const char* msg, ...) override;
++  void Info(const char* msg, ...) override;
++  void Warning(const char* msg, ...) override;
++  void Error(const char* msg, ...) override;
++
++  string FormatProgressStatus(const char* progress_status_format,
++                              int64_t time_millis) const;
++
++ private:
++  void PrintStatus(Edge* edge, int64_t time_millis);
++
++  const BuildConfig& config_;
++  int started_edges_, finished_edges_, total_edges_, running_edges_;
++  int64_t time_millis_;
++  LinePrinter printer_;
++  const char* progress_status_format_;
++
++  template <size_t S>
++  void SnprintfRate(double rate, char (&buf)[S], const char* format) const {
++    if (rate == -1)
++      snprintf(buf, S, "?");
++    else
++      snprintf(buf, S, format, rate);
++  }
++
++  struct SlidingRateInfo {
++    explicit SlidingRateInfo(int n) : rate_(-1), N(n), last_update_(-1) {}
++    double rate() { return rate_; }
++    void UpdateRate(int update_hint, int64_t time_millis) {
++      if (update_hint == last_update_)
++        return;
++      last_update_ = update_hint;
++      if (times_.size() == N)
++        times_.pop();
++      times_.push(time_millis);
++      if (times_.back() != times_.front())
++        rate_ = times_.size() / ((times_.back() - times_.front()) / 1e3);
++    }
++
++   private:
++    double rate_;
++    const size_t N;
++    queue<double> times_;
++    int last_update_;
++  };
++
++  mutable SlidingRateInfo current_rate_;
++};
++
++#ifndef _WIN32
++
++#include "filebuf.h"
++#include "frontend.pb.h"
++
++struct StatusSerializer : Status {
++  explicit StatusSerializer(const BuildConfig& config);
++  ~StatusSerializer() override;
++
++  void PlanHasTotalEdges(int total) override;
++  void BuildEdgeStarted(Edge* edge, int64_t start_time) override;
++  void BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
++                         const CommandRunner::Result* result) override;
++  void BuildLoadDyndeps() override;
++  void BuildStarted() override;
++  void BuildFinished() override;
++
++  void Debug(const char* msg, ...) override;
++  void Info(const char* msg, ...) override;
++  void Warning(const char* msg, ...) override;
++  void Error(const char* msg, ...) override;
++
++  void AddEstimatedTime(int64_t estimated_time_millis) override;
++  void SetCriticalPathTime(int64_t critical_path_time_millis) override;
++
++  const BuildConfig& config_;
++  FILE* f_;
++  ofilebuf* filebuf_;
++  std::ostream* out_;
++  ninja::Status proto_;
++  SubprocessSet subprocess_set_;
++  Subprocess* subprocess_;
++  int total_edges_;
++
++ private:
++  void Message(ninja::Status::Message::Level level, const char* msg,
++               va_list ap);
++  void Send();
++
++  int64_t estimated_total_time_millis_ = 0;
++  int64_t critical_path_time_millis_ = 0;
++  int64_t estimated_edges_ = 0;
++};
++
++#endif
++
++#endif  // NINJA_STATUS_H_
+diff --git a/src/subprocess-posix.cc b/src/subprocess-posix.cc
+index fc5543e..0c6a7ec 100644
+--- a/src/subprocess-posix.cc
++++ b/src/subprocess-posix.cc
+@@ -12,26 +12,25 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-#include "subprocess.h"
+-
+-#include <sys/select.h>
+ #include <assert.h>
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <poll.h>
+-#include <unistd.h>
++#include <spawn.h>
+ #include <stdio.h>
+ #include <string.h>
++#include <sys/select.h>
+ #include <sys/wait.h>
+-#include <spawn.h>
++#include <unistd.h>
++
++#include "subprocess.h"
+ 
+ extern char** environ;
+ 
+ #include "util.h"
+ 
+-Subprocess::Subprocess(bool use_console) : fd_(-1), pid_(-1),
+-                                           use_console_(use_console) {
+-}
++Subprocess::Subprocess(bool use_console)
++    : fd_(-1), pid_(-1), use_console_(use_console) {}
+ 
+ Subprocess::~Subprocess() {
+   if (fd_ >= 0)
+@@ -41,7 +40,8 @@ Subprocess::~Subprocess() {
+     Finish();
+ }
+ 
+-bool Subprocess::Start(SubprocessSet* set, const string& command) {
++bool Subprocess::Start(SubprocessSet* set, const EdgeCommand& cmd,
++                       int extra_fd) {
+   int output_pipe[2];
+   if (pipe(output_pipe) < 0)
+     Fatal("pipe: %s", strerror(errno));
+@@ -63,6 +63,11 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
+   if (err != 0)
+     Fatal("posix_spawn_file_actions_addclose: %s", strerror(err));
+ 
++  if (extra_fd >= 0) {
++    if (posix_spawn_file_actions_adddup2(&action, extra_fd, 3) != 0)
++      Fatal("posix_spawn_file_actions_adddup2: %s", strerror(errno));
++  }
++
+   posix_spawnattr_t attr;
+   err = posix_spawnattr_init(&attr);
+   if (err != 0)
+@@ -84,8 +89,8 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
+     // No need to posix_spawnattr_setpgroup(&attr, 0), it's the default.
+ 
+     // Open /dev/null over stdin.
+-    err = posix_spawn_file_actions_addopen(&action, 0, "/dev/null", O_RDONLY,
+-          0);
++    err =
++        posix_spawn_file_actions_addopen(&action, 0, "/dev/null", O_RDONLY, 0);
+     if (err != 0) {
+       Fatal("posix_spawn_file_actions_addopen: %s", strerror(err));
+     }
+@@ -110,9 +115,10 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
+   if (err != 0)
+     Fatal("posix_spawnattr_setflags: %s", strerror(err));
+ 
+-  const char* spawned_args[] = { "/bin/sh", "-c", command.c_str(), NULL };
++  const char* spawned_args[] = { "/bin/sh", "-c", cmd.command.c_str(), NULL };
+   err = posix_spawn(&pid_, "/bin/sh", &action, &attr,
+-        const_cast<char**>(spawned_args), environ);
++                    const_cast<char**>(spawned_args),
++                    cmd.env ? cmd.env : environ);
+   if (err != 0)
+     Fatal("posix_spawn: %s", strerror(err));
+ 
+@@ -140,11 +146,15 @@ void Subprocess::OnPipeReady() {
+   }
+ }
+ 
++const struct rusage* Subprocess::GetUsage() const {
++  return &rusage_;
++}
++
+ ExitStatus Subprocess::Finish() {
+   assert(pid_ != -1);
+   int status;
+-  if (waitpid(pid_, &status, 0) < 0)
+-    Fatal("waitpid(%d): %s", pid_, strerror(errno));
++  if (wait4(pid_, &status, 0, &rusage_) < 0)
++    Fatal("wait4(%d): %s", pid_, strerror(errno));
+   pid_ = -1;
+ 
+   if (WIFEXITED(status)) {
+@@ -152,8 +162,8 @@ ExitStatus Subprocess::Finish() {
+     if (exit == 0)
+       return ExitSuccess;
+   } else if (WIFSIGNALED(status)) {
+-    if (WTERMSIG(status) == SIGINT || WTERMSIG(status) == SIGTERM
+-        || WTERMSIG(status) == SIGHUP)
++    if (WTERMSIG(status) == SIGINT || WTERMSIG(status) == SIGTERM ||
++        WTERMSIG(status) == SIGHUP)
+       return ExitInterrupted;
+   }
+   return ExitFailure;
+@@ -221,9 +231,9 @@ SubprocessSet::~SubprocessSet() {
+     Fatal("sigprocmask: %s", strerror(errno));
+ }
+ 
+-Subprocess *SubprocessSet::Add(const string& command, bool use_console) {
+-  Subprocess *subprocess = new Subprocess(use_console);
+-  if (!subprocess->Start(this, command)) {
++Subprocess* SubprocessSet::Add(const EdgeCommand& cmd, int extra_fd) {
++  Subprocess* subprocess = new Subprocess(cmd.use_console);
++  if (!subprocess->Start(this, cmd, extra_fd)) {
+     delete subprocess;
+     return 0;
+   }
+@@ -236,8 +246,8 @@ bool SubprocessSet::DoWork() {
+   vector<pollfd> fds;
+   nfds_t nfds = 0;
+ 
+-  for (vector<Subprocess*>::iterator i = running_.begin();
+-       i != running_.end(); ++i) {
++  for (vector<Subprocess*>::iterator i = running_.begin(); i != running_.end();
++       ++i) {
+     int fd = (*i)->fd_;
+     if (fd < 0)
+       continue;
+@@ -262,7 +272,7 @@ bool SubprocessSet::DoWork() {
+ 
+   nfds_t cur_nfd = 0;
+   for (vector<Subprocess*>::iterator i = running_.begin();
+-       i != running_.end(); ) {
++       i != running_.end();) {
+     int fd = (*i)->fd_;
+     if (fd < 0)
+       continue;
+@@ -281,19 +291,19 @@ bool SubprocessSet::DoWork() {
+   return IsInterrupted();
+ }
+ 
+-#else  // !defined(USE_PPOLL)
++#else   // !defined(USE_PPOLL)
+ bool SubprocessSet::DoWork() {
+   fd_set set;
+   int nfds = 0;
+   FD_ZERO(&set);
+ 
+-  for (vector<Subprocess*>::iterator i = running_.begin();
+-       i != running_.end(); ++i) {
++  for (vector<Subprocess*>::iterator i = running_.begin(); i != running_.end();
++       ++i) {
+     int fd = (*i)->fd_;
+     if (fd >= 0) {
+       FD_SET(fd, &set);
+-      if (nfds < fd+1)
+-        nfds = fd+1;
++      if (nfds < fd + 1)
++        nfds = fd + 1;
+     }
+   }
+ 
+@@ -312,7 +322,7 @@ bool SubprocessSet::DoWork() {
+     return true;
+ 
+   for (vector<Subprocess*>::iterator i = running_.begin();
+-       i != running_.end(); ) {
++       i != running_.end();) {
+     int fd = (*i)->fd_;
+     if (fd >= 0 && FD_ISSET(fd, &set)) {
+       (*i)->OnPipeReady();
+@@ -338,14 +348,14 @@ Subprocess* SubprocessSet::NextFinished() {
+ }
+ 
+ void SubprocessSet::Clear() {
+-  for (vector<Subprocess*>::iterator i = running_.begin();
+-       i != running_.end(); ++i)
++  for (vector<Subprocess*>::iterator i = running_.begin(); i != running_.end();
++       ++i)
+     // Since the foreground process is in our process group, it will receive
+     // the interruption signal (i.e. SIGINT or SIGTERM) at the same time as us.
+     if (!(*i)->use_console_)
+       kill(-(*i)->pid_, interrupted_);
+-  for (vector<Subprocess*>::iterator i = running_.begin();
+-       i != running_.end(); ++i)
++  for (vector<Subprocess*>::iterator i = running_.begin(); i != running_.end();
++       ++i)
+     delete *i;
+   running_.clear();
+ }
+diff --git a/src/subprocess.h b/src/subprocess.h
+index b2d486c..ca05dae 100644
+--- a/src/subprocess.h
++++ b/src/subprocess.h
+@@ -15,26 +15,28 @@
+ #ifndef NINJA_SUBPROCESS_H_
+ #define NINJA_SUBPROCESS_H_
+ 
++#include <queue>
+ #include <string>
+ #include <vector>
+-#include <queue>
+ using namespace std;
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+ #else
+ #include <signal.h>
++#include <sys/resource.h>
+ #endif
+ 
+ // ppoll() exists on FreeBSD, but only on newer versions.
+ #ifdef __FreeBSD__
+-#  include <sys/param.h>
+-#  if defined USE_PPOLL && __FreeBSD_version < 1002000
+-#    undef USE_PPOLL
+-#  endif
++#include <sys/param.h>
++#if defined USE_PPOLL && __FreeBSD_version < 1002000
++#undef USE_PPOLL
++#endif
+ #endif
+ 
+ #include "exit_status.h"
++#include "graph.h"
+ 
+ /// Subprocess wraps a single async subprocess.  It is entirely
+ /// passive: it expects the caller to notify it when its fds are ready
+@@ -51,9 +53,13 @@ struct Subprocess {
+ 
+   const string& GetOutput() const;
+ 
++#ifndef _WIN32
++  const struct rusage* GetUsage() const;
++#endif
++
+  private:
+   Subprocess(bool use_console);
+-  bool Start(struct SubprocessSet* set, const string& command);
++  bool Start(struct SubprocessSet* set, const EdgeCommand& cmd, int extra_fd);
+   void OnPipeReady();
+ 
+   string buf_;
+@@ -71,6 +77,7 @@ struct Subprocess {
+ #else
+   int fd_;
+   pid_t pid_;
++  struct rusage rusage_;
+ #endif
+   bool use_console_;
+ 
+@@ -84,7 +91,7 @@ struct SubprocessSet {
+   SubprocessSet();
+   ~SubprocessSet();
+ 
+-  Subprocess* Add(const string& command, bool use_console = false);
++  Subprocess* Add(const EdgeCommand& cmd, int extra_fd = -1);
+   bool DoWork();
+   Subprocess* NextFinished();
+   void Clear();
+@@ -111,4 +118,4 @@ struct SubprocessSet {
+ #endif
+ };
+ 
+-#endif // NINJA_SUBPROCESS_H_
++#endif  // NINJA_SUBPROCESS_H_
 -- 
 2.53.0
 

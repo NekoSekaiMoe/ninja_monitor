@@ -219,8 +219,10 @@ func runPatch() error {
 	}
 
 	ninjaModDir := filepath.Join(rootDir, "dep", "ninja_mod")
-	cmakeFile := filepath.Join(ninjaModDir, "CMakeLists.txt")
-	if fileExists(cmakeFile) {
+
+	checkCmd := exec.Command("git", "apply", "--reverse", "--check", patchFile)
+	checkCmd.Dir = ninjaModDir
+	if err := checkCmd.Run(); err == nil {
 		if *verbose {
 			fmt.Println("  patch already applied")
 		}
@@ -229,6 +231,8 @@ func runPatch() error {
 
 	cmd := exec.Command("git", "apply", patchFile)
 	cmd.Dir = ninjaModDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
@@ -287,9 +291,9 @@ func ninjaSources() []string {
 		"build", "build_log", "clean", "clparser", "debug_flags",
 		"depfile_parser", "deps_log", "disk_interface", "dyndep", "dyndep_parser",
 		"edit_distance", "eval_env", "graph", "graphviz", "lexer",
-		"line_printer", "manifest_chunk_parser", "manifest_parser", "metrics",
-		"parser", "proto", "state", "status", "string_piece_util",
-		"thread_pool", "util", "version", "subprocess-posix", "ninja",
+		"line_printer", "manifest_parser", "metrics", "parser", "proto",
+		"state", "status", "string_piece_util", "subprocess-posix", "util",
+		"version", "ninja",
 	}
 }
 
