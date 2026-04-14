@@ -94,7 +94,7 @@ func TestStatusOutput(t *testing.T) {
 
 			t.Run("smart", func(t *testing.T) {
 				smart := &fakeSmartTerminal{termWidth: 40}
-				stat := NewStatusOutput(smart, "", false, false, false)
+				stat := NewStatusOutput(smart, "", false, false, false, false)
 				tt.calls(stat)
 				stat.Flush()
 
@@ -105,7 +105,7 @@ func TestStatusOutput(t *testing.T) {
 
 			t.Run("simple", func(t *testing.T) {
 				simple := &bytes.Buffer{}
-				stat := NewStatusOutput(simple, "", false, false, false)
+				stat := NewStatusOutput(simple, "", false, false, false, false)
 				tt.calls(stat)
 				stat.Flush()
 
@@ -116,7 +116,7 @@ func TestStatusOutput(t *testing.T) {
 
 			t.Run("force simple", func(t *testing.T) {
 				smart := &fakeSmartTerminal{termWidth: 40}
-				stat := NewStatusOutput(smart, "", true, false, false)
+				stat := NewStatusOutput(smart, "", true, false, false, false)
 				tt.calls(stat)
 				stat.Flush()
 
@@ -125,6 +125,52 @@ func TestStatusOutput(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestVerboseRunningJobsShownOnlyInSimpleOutput(t *testing.T) {
+	counts := status.Counts{TotalActions: 10, FinishedActions: 3, RunningActions: 2}
+
+	t.Run("smart", func(t *testing.T) {
+		got := newFormatter(true, "", false, true).progress(counts)
+		if !bytes.Contains([]byte(got), []byte("]\x1b[0m\x1b[92m(2 jobs)\x1b[0m")) {
+			t.Fatalf("smart output should color jobs suffix in bold green, got %q", got)
+		}
+		if !bytes.Contains([]byte(got), []byte("](2 jobs)")) && !bytes.Contains([]byte(got), []byte("(2 jobs)")) {
+			t.Fatalf("smart output should include jobs count as suffix after progress block, got %q", got)
+		}
+		if bytes.Contains([]byte(got), []byte(" 2 jobs]")) {
+			t.Fatalf("smart output should not render jobs count inside progress block, got %q", got)
+		}
+	})
+
+	t.Run("simple", func(t *testing.T) {
+		got := newFormatter(false, "", false, true).progress(counts)
+		if !bytes.Contains([]byte(got), []byte("](2 jobs)")) {
+			t.Fatalf("simple output should include jobs count as suffix after progress block, got %q", got)
+		}
+	})
+}
+
+func TestSmartStatusLineDoesNotDoubleWrapAnsi(t *testing.T) {
+	smart := &fakeSmartTerminal{termWidth: 80}
+	stat := NewStatusOutput(smart, "", false, false, false, true)
+	smartStat := stat.(*smartStatusOutput)
+
+	line := newFormatter(true, "", false, true).progress(status.Counts{
+		TotalActions:    10,
+		FinishedActions: 3,
+		RunningActions:  2,
+	}) + "compile foo"
+
+	smartStat.statusLine(line)
+
+	got := smart.String()
+	if bytes.Count([]byte(got), []byte(ansi.boldBlue())) != 1 {
+		t.Fatalf("smart status line should not wrap an already colored line twice, got %q", got)
+	}
+	if bytes.Contains([]byte(got), []byte(ansi.boldBlue()+ansi.boldBlue())) {
+		t.Fatalf("smart status line should not contain duplicated leading blue ANSI, got %q", got)
 	}
 }
 
@@ -271,7 +317,7 @@ func TestSmartStatusOutputWidthChange(t *testing.T) {
 	os.Setenv(tableHeightEnVar, "")
 
 	smart := &fakeSmartTerminal{termWidth: 40}
-	stat := NewStatusOutput(smart, "", false, false, false)
+	stat := NewStatusOutput(smart, "", false, false, false, false)
 	smartStat := stat.(*smartStatusOutput)
 	smartStat.sigwinchHandled = make(chan bool)
 
@@ -300,7 +346,7 @@ func TestSmartStatusDoesntHideAfterSucecss(t *testing.T) {
 	os.Setenv(tableHeightEnVar, "")
 
 	smart := &fakeSmartTerminal{termWidth: 40}
-	stat := NewStatusOutput(smart, "", false, false, false)
+	stat := NewStatusOutput(smart, "", false, false, false, false)
 	smartStat := stat.(*smartStatusOutput)
 	smartStat.sigwinchHandled = make(chan bool)
 
@@ -336,7 +382,7 @@ func TestSmartStatusHideAfterFailure(t *testing.T) {
 	os.Setenv(tableHeightEnVar, "")
 
 	smart := &fakeSmartTerminal{termWidth: 40}
-	stat := NewStatusOutput(smart, "", false, false, false)
+	stat := NewStatusOutput(smart, "", false, false, false, false)
 	smartStat := stat.(*smartStatusOutput)
 	smartStat.sigwinchHandled = make(chan bool)
 
@@ -373,7 +419,7 @@ func TestSmartStatusHideAfterFailurePlural(t *testing.T) {
 	os.Setenv(tableHeightEnVar, "")
 
 	smart := &fakeSmartTerminal{termWidth: 40}
-	stat := NewStatusOutput(smart, "", false, false, false)
+	stat := NewStatusOutput(smart, "", false, false, false, false)
 	smartStat := stat.(*smartStatusOutput)
 	smartStat.sigwinchHandled = make(chan bool)
 
@@ -418,7 +464,7 @@ func TestSmartStatusDontHideErrorAfterFailure(t *testing.T) {
 	os.Setenv(tableHeightEnVar, "")
 
 	smart := &fakeSmartTerminal{termWidth: 40}
-	stat := NewStatusOutput(smart, "", false, false, false)
+	stat := NewStatusOutput(smart, "", false, false, false, false)
 	smartStat := stat.(*smartStatusOutput)
 	smartStat.sigwinchHandled = make(chan bool)
 

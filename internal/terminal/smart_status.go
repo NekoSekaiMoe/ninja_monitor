@@ -280,10 +280,15 @@ func (s *smartStatusOutput) statusLine(str string) {
 	// another line and we won't delete the previous line.
 	str = elide(str, s.termWidth)
 
-	// Move to the beginning on the line, turn on bright blue, print the output,
-	// turn off bright blue, then clear the rest of the line.
-	start := "\r" + ansi.boldBlue()
-	end := ansi.regular() + ansi.clearToEndOfLine()
+	// Avoid wrapping the whole line in another ANSI color when the formatter has
+	// already embedded color spans. Nested color/reset sequences make different
+	// segments of the status line appear to repaint independently.
+	start := "\r"
+	end := ansi.clearToEndOfLine()
+	if !strings.ContainsRune(str, '\x1b') {
+		start += ansi.boldBlue()
+		end = ansi.regular() + end
+	}
 	fmt.Fprint(s.writer, start, str, end)
 	s.haveBlankLine = false
 }

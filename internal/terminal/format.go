@@ -84,13 +84,10 @@ func (s formatter) progress(counts status.Counts) string {
 			output += fmt.Sprintf(" %s remaining", remaining)
 		}
 		output += "]"
-		if s.colorize {
-			output += ansi.regular()
-		}
 
-		// Verbose mode: show running jobs count right after brackets, no space
 		if s.verbose && counts.RunningActions > 0 {
 			if s.colorize {
+				output += ansi.regular()
 				output += ansi.boldGreen()
 			}
 			if counts.RunningActions == 1 {
@@ -98,9 +95,9 @@ func (s formatter) progress(counts status.Counts) string {
 			} else {
 				output += fmt.Sprintf("(%d jobs)", counts.RunningActions)
 			}
-			if s.colorize {
-				output += ansi.regular()
-			}
+		}
+		if s.colorize {
+			output += ansi.regular()
 		}
 		output += " "
 
