@@ -128,7 +128,7 @@ func TestStatusOutput(t *testing.T) {
 	}
 }
 
-func TestVerboseRunningJobsShownOnlyInSimpleOutput(t *testing.T) {
+func TestVerboseRunningJobsShownAsGreenSuffix(t *testing.T) {
 	counts := status.Counts{TotalActions: 10, FinishedActions: 3, RunningActions: 2}
 
 	t.Run("smart", func(t *testing.T) {
